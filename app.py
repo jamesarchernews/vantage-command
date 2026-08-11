@@ -1,4 +1,4 @@
-# BUILD: 008.2
+# BUILD: 011.1 (CLOUD READY)
 import asyncio
 import json
 import random
@@ -7,19 +7,13 @@ import io
 import os
 import re
 import piexif
-import language_tool_python
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="OSINT TACTICAL COMMAND", version="0.0.8")
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="0.11.1")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-try:
-    grammar_tool = language_tool_python.LanguageToolPublicAPI('en-US')
-except Exception as e:
-    grammar_tool = None
 
 os.makedirs("local_storage/notes", exist_ok=True)
 os.makedirs("local_storage/vault", exist_ok=True)
@@ -38,7 +32,7 @@ live_cad_dispatches = []
 CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
 
 async def fetch_osint_data():
-    payload = {"build": "008.2", "air_traffic": [], "seismic": [], "emergencies": []}
+    payload = {"build": "011.1", "air_traffic": [], "seismic": [], "emergencies": []}
     global live_cad_dispatches
     payload["emergencies"].extend(live_cad_dispatches)
     live_cad_dispatches = [] 
@@ -140,19 +134,7 @@ async def check_style(request: Request):
         else:
             if re.search(rf"\b{re.escape(term_lower)}\b", text.lower()): flags.append({"type": f"Reference: {entry['term']}", "error": entry["term"], "suggestion": entry["rule"], "category": "AP Style"})
 
-    if grammar_tool:
-        try:
-            for m in grammar_tool.check(text)[:10]: flags.append({"type": "Syntax / Grammar", "error": m.context[m.offset:m.offset+m.errorLength], "suggestion": f"{m.message} (Try: {', '.join(m.replacements[:3])})", "category": "Grammar"})
-        except Exception: pass
-
     return {"flags": flags}
-
-@app.post("/api/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
-    from faster_whisper import WhisperModel
-    model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(io.BytesIO(await file.read()), beam_size=5)
-    return {"transcript": [{"start": s.start, "end": s.end, "text": s.text} for s in segments]}
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
