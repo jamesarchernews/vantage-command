@@ -10,6 +10,14 @@ function playBeep(freq, type = 'square', duration = 0.1) {
     osc.start(); osc.stop(audioCtx.currentTime + duration);
 }
 
+function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 let deckgl = null;
 document.addEventListener('DOMContentLoaded', () => {
     const startScreen = document.getElementById('start-screen');
@@ -79,6 +87,9 @@ let persistentEmergencies = [];
 let latestAirTraffic = [];
 let latestSurveillance = [];
 let activeRoutePath = null;
+let searchPinCoords = null;
+let transitData = [];
+let showTransit = false;
 let t = 0;
 
 function initMapAndDeck() {
@@ -110,16 +121,70 @@ function connectWebSocket() {
         const airStat = document.getElementById('stat-air');
         if (airStat) airStat.innerText = latestAirTraffic.length;
     };
-
     ws.onclose = () => { setTimeout(connectWebSocket, 3000); };
 }
 
-async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
-    document.getElementById('navi-hud').classList.remove('hidden');
+// --- SEARCH & TRANSIT LAYERS ---
+async function handleMapSearch(e) {
+    if (e.key === 'Enter') {
+        const q = e.target.value.trim();
+        if (!q) return;
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&viewbox=-118.8,34.5,-117.5,33.5&bounded=1&format=json`);
+            const data = await res.json();
+            if(data && data.length > 0) {
+                const lat = parseFloat(data[0].lat);
+                const lon = parseFloat(data[0].lon);
+                searchPinCoords = [lon, lat];
+                deckgl.setProps({ initialViewState: { ...currentViewState, longitude: lon, latitude: lat, zoom: 15, transitionDuration: 1500 }});
+                playBeep(1800, 'sine', 0.1);
+            } else {
+                playBeep(400, 'sawtooth', 0.2);
+            }
+        } catch(err) { console.error(err); }
+    }
+}
+
+async function toggleTransitLayer() {
+    showTransit = !showTransit;
+    const btn = document.getElementById('btn-transit');
+    btn.classList.toggle('bg-[#FF9900]');
+    btn.classList.toggle('text-black');
+    
+    if (showTransit && transitData.length === 0) {
+        playBeep(1200, 'sawtooth', 0.1);
+        btn.innerText = "[ 🚆 LOADING TRANSIT... ]";
+        try {
+            const query = `[out:json][timeout:25];(way["route"~"subway|light_rail|bus"](33.5,-118.8,34.5,-117.5););out geom;`;
+            const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query) });
+            const data = await res.json();
+            transitData = data.elements.map(e => ({ path: e.geometry.map(g => [g.lon, g.lat]) }));
+            btn.innerText = "[ 🚆 TRANSIT LAYER ACTIVE ]";
+            playBeep(2400, 'sine', 0.1);
+        } catch(err) {
+            btn.innerText = "[ 🚆 TRANSIT LAYER FAILED ]";
+        }
+    } else {
+        btn.innerText = showTransit ? "[ 🚆 TRANSIT LAYER ACTIVE ]" : "[ 🚆 TRANSIT LAYER ]";
+    }
+}
+
+// --- GPS ROUTING REPAIR ---
+async function calculateInAppRoute(endLon, endLat) {
+    const routeBox = document.getElementById('route-output-area');
+    routeBox.classList.remove('hidden');
     document.getElementById('route-steps').innerHTML = '<div class="text-[#00E5FF] animate-pulse">> CALCULATING VECTOR PATHWAY...</div>';
+    
+    let sLon = userCoords ? userCoords[0] : -118.2426;
+    let sLat = userCoords ? userCoords[1] : 34.0549;
+
     try {
-        const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson&steps=true`);
+        const url = `https://router.project-osrm.org/route/v1/driving/${sLon},${sLat};${endLon},${endLat}?overview=full&geometries=geojson&steps=true`;
+        const res = await fetch(url);
         const data = await res.json();
+        
+        if(data.code !== 'Ok') throw new Error("OSRM Failed");
+
         const route = data.routes[0];
         activeRoutePath = route.geometry.coordinates;
         document.getElementById('route-dist').innerText = `${(route.distance / 1609.34).toFixed(1)} MI`;
@@ -130,10 +195,16 @@ async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
                 <div class="text-[10px] text-gray-400">TRANSIT: ${Math.round(step.distance)} METERS</div>
             </div>`).join('');
         playBeep(2200, 'sine', 0.2);
-    } catch (err) { document.getElementById('route-steps').innerHTML = '<div class="text-[#FF0033]">❌ ROUTE FAILED.</div>'; }
+    } catch (err) { 
+        document.getElementById('route-steps').innerHTML = '<div class="text-[#FF0033]">❌ ROUTE FAILED. VERIFY GPS.</div>'; 
+    }
 }
 
-function clearActiveRoute() { playBeep(800, 'square', 0.1); activeRoutePath = null; document.getElementById('navi-hud').classList.add('hidden'); }
+function clearActiveRoute() { 
+    playBeep(800, 'square', 0.1); 
+    activeRoutePath = null; 
+    document.getElementById('route-output-area').classList.add('hidden'); 
+}
 
 let selectedTargetCoords = null;
 function showTargetCard(obj, isAir = false, isSurveillance = false) {
@@ -161,8 +232,8 @@ function showTargetCard(obj, isAir = false, isSurveillance = false) {
         document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
     }
 
-    document.getElementById('lock-cam-btn').onclick = () => { deckgl.setProps({ initialViewState: { ...currentViewState, longitude: selectedTargetCoords[0], latitude: selectedTargetCoords[1], zoom: 14, transitionDuration: 1000 }}); };
-    document.getElementById('directions-btn').onclick = () => { calculateInAppRoute(userCoords ? userCoords[0] : -118.2426, userCoords ? userCoords[1] : 34.0549, selectedTargetCoords[0], selectedTargetCoords[1]); };
+    document.getElementById('lock-cam-btn').onclick = () => { deckgl.setProps({ initialViewState: { ...currentViewState, longitude: selectedTargetCoords[0], latitude: selectedTargetCoords[1], zoom: 16, transitionDuration: 1000 }}); };
+    document.getElementById('directions-btn').onclick = () => { calculateInAppRoute(selectedTargetCoords[0], selectedTargetCoords[1]); };
 }
 function closeTargetCard() { document.getElementById('target-modal').classList.add('hidden'); }
 
@@ -178,6 +249,14 @@ function renderLayers() {
     const layers = [];
     if (userCoords) layers.push(new deck.ScatterplotLayer({ id: 'user', data: [{ coords: userCoords }], getPosition: d => d.coords, getFillColor: [0, 229, 255, 200], getRadius: (t * 2) + 10, radiusMinPixels: 6, radiusMaxPixels: 20, stroked: true, getLineColor: [255, 255, 255] }));
     if (activeRoutePath) layers.push(new deck.PathLayer({ id: 'route', data: [{ path: activeRoutePath }], getPath: d => d.path, getColor: [0, 229, 255, 220], getWidth: 8, widthMinPixels: 4 }));
+    
+    if (searchPinCoords) {
+        layers.push(new deck.ScatterplotLayer({ id: 'search-pin', data: [{coords: searchPinCoords}], getPosition: d=>d.coords, getFillColor: [0, 229, 255, 200], getRadius: 50, radiusMinPixels: 8, radiusMaxPixels: 25, stroked: true, getLineColor: [255, 255, 255, 255] }));
+    }
+
+    if (showTransit && transitData.length > 0) {
+        layers.push(new deck.PathLayer({ id: 'transit-lines', data: transitData, getPath: d=>d.path, getColor: [0, 229, 255, 120], getWidth: 15, widthMinPixels: 2 }));
+    }
     
     layers.push(new deck.ScatterplotLayer({
         id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220 })),
@@ -238,27 +317,33 @@ function downloadSecureFile(filename, content) {
     document.body.appendChild(a); a.click(); a.remove();
 }
 
-// --- NOTEBOOK COMMANDS ---
+// --- NOTEBOOK COMMANDS & BUTTONS ---
+async function saveEncryptedNoteBtn() {
+    const notesArea = document.getElementById('field-notes');
+    if(!notesArea.value) return;
+    const pass = prompt("Enter encryption passphrase for this file:");
+    if (pass) {
+        const enc = await encryptData(notesArea.value, pass);
+        downloadSecureFile(`Encrypted_Log_${Date.now()}.enc`, enc);
+        document.getElementById('save-status').innerText = "ENCRYPTION: AES-GCM | EXPORTED";
+    }
+}
+
+function exportTextNoteBtn() {
+    const notesArea = document.getElementById('field-notes');
+    if(!notesArea.value) return;
+    downloadSecureFile(`Field_Log_${Date.now()}.txt`, notesArea.value);
+}
+
 async function handleNotebookCommand(e) {
     if (e.key === 'Enter') {
         const input = document.getElementById('note-cmd');
         const notesArea = document.getElementById('field-notes');
         const cmd = input.value.trim().toLowerCase();
-        
-        if (cmd === ':ts' || cmd === ':timestamp') {
-            notesArea.value += `\n[${new Date().toISOString()}] - `;
-        } else if (cmd === ':clear') {
-            notesArea.value = '';
-        } else if (cmd === ':export') {
-            downloadSecureFile(`Field_Log_${Date.now()}.txt`, notesArea.value);
-        } else if (cmd === ':encrypt') {
-            const pass = prompt("Enter encryption passphrase for this file:");
-            if (pass) {
-                const enc = await encryptData(notesArea.value, pass);
-                downloadSecureFile(`Encrypted_Log_${Date.now()}.enc`, enc);
-                document.getElementById('save-status').innerText = "ENCRYPTION: AES-GCM | EXPORTED";
-            }
-        }
+        if (cmd === ':ts' || cmd === ':timestamp') { notesArea.value += `\n[${new Date().toISOString()}] - `; } 
+        else if (cmd === ':clear') { notesArea.value = ''; } 
+        else if (cmd === ':export') { exportTextNoteBtn(); } 
+        else if (cmd === ':encrypt') { await saveEncryptedNoteBtn(); }
         input.value = '';
     }
 }
@@ -332,22 +417,76 @@ async function scrubEXIF() {
     }
 }
 
-// --- AP EDITOR ACCORDIONS & ENCRYPTION ---
+// --- AP EDITOR STABLE REAL-TIME SCANNER ---
+let apCheckTimeout = null;
+
+function debouncedAPCheck() {
+    clearTimeout(apCheckTimeout);
+    const text = document.getElementById('workbench-text').value;
+    document.getElementById('workbench-preview').innerHTML = escapeHtml(text).replace(/\n/g, '<br>');
+    apCheckTimeout = setTimeout(runAPStyleCheck, 300);
+}
+
 async function runAPStyleCheck() {
     const text = document.getElementById('workbench-text').value;
-    if(!text) return;
-    playBeep(600, 'sawtooth', 0.2);
-    document.getElementById('ap-results').innerHTML = '<div class="text-[#FF9900] animate-pulse">> Scanning copy...</div>';
-    const res = await fetch('/api/check-style', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-    const data = await res.json();
-    playBeep(2400, 'sine', 0.2);
-    if (data.flags.length === 0) { document.getElementById('ap-results').innerHTML = '<div class="text-[#00FF66] font-bold">> COPY IS CLEAN.</div>'; return; }
-    document.getElementById('ap-results').innerHTML = data.flags.map(f => `
-        <div class="border-l-2 border-[#FF9900] pl-2 mb-3 py-1 bg-black/40">
-            <div class="text-[10px] text-[#00E5FF] font-bold">${f.type}</div>
-            <div class="text-[#FF0033] font-bold">MATCH: "${f.error}"</div>
-            <div class="text-[#00FF66] text-[11px] mt-1">> ${f.suggestion}</div>
-        </div>`).join('');
+    const previewBox = document.getElementById('workbench-preview');
+    const resultsBox = document.getElementById('ap-results');
+    
+    if (!text || !text.trim()) { 
+        if (previewBox) previewBox.innerHTML = '<em>> Live Analysis Buffer idle...</em>'; 
+        if (resultsBox) resultsBox.innerHTML = '<div class="text-[#00FF66] font-bold">> READY FOR COPY.</div>';
+        return; 
+    }
+    
+    try {
+        const res = await fetch('/api/check-style', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ text }) 
+        });
+        if (!res.ok) throw new Error("API returned non-200");
+        const data = await res.json();
+        
+        if (!data.flags || data.flags.length === 0) { 
+            if (resultsBox) resultsBox.innerHTML = '<div class="text-[#00FF66] font-bold">> COPY IS CLEAN. NO ISSUES DETECTED.</div>'; 
+            if (previewBox) previewBox.innerHTML = escapeHtml(text).replace(/\n/g, '<br>'); 
+            return; 
+        }
+        
+        playBeep(2400, 'sine', 0.15);
+        
+        let safeText = escapeHtml(data.original_text);
+        const sortedFlags = data.flags.sort((a,b) => b.error.length - a.error.length);
+        
+        sortedFlags.forEach(f => {
+            if (!f.error) return;
+            const escapedErr = escapeRegExp(escapeHtml(f.error));
+            const spanClass = f.level === 'red' 
+                ? 'bg-[#FF0033]/30 border border-[#FF0033] text-[#FF0033] px-1 font-bold shadow-[0_0_8px_rgba(255,0,51,0.6)]' 
+                : 'bg-[#FF9900]/30 border border-[#FF9900] text-[#FF9900] px-1 font-bold shadow-[0_0_8px_rgba(255,153,0,0.6)]';
+            
+            const regex = new RegExp(`\\b(${escapedErr})\\b(?![^<]*>)`, 'gi');
+            safeText = safeText.replace(regex, `<span class="${spanClass}">$1</span>`);
+        });
+        
+        if (previewBox) previewBox.innerHTML = safeText.replace(/\n/g, '<br>');
+        
+        if (resultsBox) {
+            resultsBox.innerHTML = data.flags.map(f => {
+                const color = f.level === 'red' ? 'text-[#FF0033]' : 'text-[#FF9900]';
+                const border = f.level === 'red' ? 'border-[#FF0033]' : 'border-[#FF9900]';
+                return `
+                <div class="border-l-2 ${border} pl-2 mb-2 py-1 bg-black/60">
+                    <div class="text-[10px] text-[#00E5FF] font-bold uppercase">${f.type}</div>
+                    <div class="${color} font-bold text-xs">FLAGGED: "${escapeHtml(f.error)}"</div>
+                    <div class="text-[#00FF66] text-[11px] mt-0.5">> ${escapeHtml(f.suggestion)}</div>
+                </div>`;
+            }).join('');
+        }
+    } catch (err) {
+        console.error("Style check error:", err);
+        if (resultsBox) resultsBox.innerHTML = '<div class="text-[#FF0033] font-bold">❌ SCANNER ENGINE ERROR. VERIFY SERVER STATUS.</div>';
+    }
 }
 
 function toggleAccordion(id) {
@@ -361,13 +500,17 @@ async function searchStylebook() {
     const data = await res.json();
     const container = document.getElementById('stylebook-results');
     if (!data.results || data.results.length === 0) { container.innerHTML = '<div class="text-[#00E5FF]/50">> NO MATCH FOUND.</div>'; return; }
-    container.innerHTML = data.results.map((r, idx) => `
+    
+    container.innerHTML = data.results.map((r, idx) => {
+        const displayName = r.term.replace('[AP STYLE] CHAPTER:', '[AP]').replace('[AP STYLE]', '[AP]');
+        return `
         <div class="border border-[#00E5FF]/30 bg-black mb-1">
-            <div onclick="toggleAccordion('acc-${idx}')" class="cursor-pointer p-2 bg-[#00E5FF]/10 text-[#00E5FF] font-bold uppercase tracking-wider flex justify-between items-center hover:bg-[#00E5FF]/20 transition-all">
-                <span>${r.term}</span> <span>▼</span>
+            <div onclick="toggleAccordion('acc-${idx}')" class="cursor-pointer p-2 bg-[#00E5FF]/10 text-[#00E5FF] font-bold uppercase tracking-wider flex justify-between items-center hover:bg-[#00E5FF]/20 transition-all truncate">
+                <span class="truncate pr-2">${displayName}</span> <span>▼</span>
             </div>
             <div id="acc-${idx}" class="hidden p-2 text-gray-300 text-[11px] border-t border-[#00E5FF]/30">${r.rule}</div>
-        </div>`).join('');
+        </div>`
+    }).join('');
 }
 
 async function saveEncryptedDraft() {
@@ -428,11 +571,13 @@ function filterGlobalCodex() {
         indexTitle.innerText = `[ GLOBAL SEARCH ]`;
         indexCount.innerText = `${results.length} HITS`;
 
-        indexList.innerHTML = results.map((entry) => `
+        indexList.innerHTML = results.map((entry) => {
+            const displayTerm = entry.term.replace('[AP STYLE] CHAPTER:', '[AP]').replace('[AP STYLE]', '[AP]');
+            return `
             <div onclick='loadIntoReadingPane(${JSON.stringify(entry.term)})' class="cursor-pointer px-2 py-1.5 text-xs font-mono text-[#00FF66] hover:bg-[#00FF66] hover:text-black transition-colors truncate border-b border-[#00FF66]/10">
-                > ${entry.term}
-            </div>
-        `).join('') || '<div class="text-xs text-[#FF9900] p-2">NO MATCHES</div>';
+                > ${displayTerm}
+            </div>`
+        }).join('') || '<div class="text-xs text-[#FF9900] p-2">NO MATCHES</div>';
     }
 }
 
@@ -488,16 +633,18 @@ function selectFolder(folderKey) {
     indexTitle.innerText = `FOLDER: [ ${folderKey} ]`;
     indexCount.innerText = `${entries.length} ENTRIES`;
 
-    indexList.innerHTML = entries.map((entry) => `
+    indexList.innerHTML = entries.map((entry) => {
+        const displayTerm = entry.term.replace('[AP STYLE] CHAPTER:', '[AP]').replace('[AP STYLE]', '[AP]');
+        return `
         <div onclick='loadIntoReadingPane(${JSON.stringify(entry.term)})' class="cursor-pointer px-2 py-1.5 text-xs font-mono text-[#00FF66] hover:bg-[#00FF66] hover:text-black transition-colors truncate border-b border-[#00FF66]/10">
-            > ${entry.term}
-        </div>
-    `).join('') || '<div class="text-xs text-[#FF9900] p-2">EMPTY</div>';
+            > ${displayTerm}
+        </div>`
+    }).join('') || '<div class="text-xs text-[#FF9900] p-2">EMPTY</div>';
 }
 
 function formatCodexRuleText(ruleText) {
     if (!ruleText) return '';
-    let safeText = ruleText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    let safeText = escapeHtml(ruleText);
     safeText = safeText.replace(/(See\s+also\s+|See\s+)([a-zA-Z0-9\-\s]+)(\.)/gi, (match, prefix, term, ending) => {
         let cleanTerm = term.trim();
         return `${prefix}<span onclick="jumpToCodexTerm('${cleanTerm}')" class="text-[#00E5FF] underline cursor-pointer hover:bg-[#00E5FF]/20 font-bold">${cleanTerm}</span>${ending}`;
@@ -509,7 +656,8 @@ function loadIntoReadingPane(termKey) {
     playBeep(1800, 'sine', 0.08);
     const entry = fullCodexDatabase.find(i => i.term === termKey);
     if (!entry) return;
-    document.getElementById('reading-term').innerText = entry.term;
+    const displayTerm = entry.term.replace('[AP STYLE] CHAPTER:', '[AP]').replace('[AP STYLE]', '[AP]');
+    document.getElementById('reading-term').innerText = displayTerm;
     document.getElementById('reading-rule').innerHTML = formatCodexRuleText(entry.rule);
     document.getElementById('reading-status').innerText = "BUFFER: LOADED";
 }
@@ -528,7 +676,33 @@ window.jumpToCodexTerm = function(targetTerm) {
     } else { playBeep(400, 'sawtooth', 0.2); }
 }
 
-// --- AI OVERSEER ROUTING ---
+// --- A.T.L.A.S. OVERSEER ROUTING & ANIMATION ---
+function setAtlasState(state) {
+    const eye = document.getElementById('atlas-eye');
+    const pupil = document.getElementById('atlas-pupil');
+    const text = document.getElementById('atlas-status-text');
+    
+    if(state === 'IDLE') {
+        eye.className = "w-16 h-4 border-2 border-[#00FF66] flex items-center justify-center transition-all duration-500";
+        pupil.className = "w-2 h-2 bg-[#00FF66] animate-pulse";
+        text.innerText = "> STATE: IDLE";
+        text.className = "text-xs text-[#00FF66] font-mono font-bold w-full text-left";
+    } else if(state === 'PROCESSING') {
+        eye.className = "w-24 h-2 border-2 border-[#FF9900] flex items-center justify-center transition-all duration-300";
+        pupil.className = "w-12 h-1 bg-[#FF9900] animate-bounce";
+        text.innerText = "> STATE: PROCESSING / THINKING";
+        text.className = "text-xs text-[#FF9900] font-mono font-bold w-full text-left";
+    } else if(state === 'RESPONDING') {
+        eye.className = "w-20 h-10 border-2 border-[#00E5FF] flex items-center justify-center transition-all duration-100 rounded-[50%]";
+        pupil.className = "w-8 h-8 bg-[#00E5FF] animate-ping rounded-full";
+        text.innerText = "> STATE: RESPONDING";
+        text.className = "text-xs text-[#00E5FF] font-mono font-bold w-full text-left";
+    }
+    
+    document.getElementById('tel-cog').innerText = Math.floor(Math.random() * 40 + 60) + "%";
+    document.getElementById('tel-syn').innerText = Math.floor(Math.random() * 8000 + 2000);
+}
+
 async function handleOverseerDirective(e) {
     if (e.key === 'Enter') {
         const input = document.getElementById('overseer-input');
@@ -536,15 +710,15 @@ async function handleOverseerDirective(e) {
         const promptText = input.value.trim();
         if(!promptText) return;
 
-        term.innerHTML += `<div class="text-white">> USER: ${promptText}</div>`;
+        term.innerHTML += `<div class="text-white mt-2">> USER: ${promptText}</div>`;
         input.value = '';
         term.scrollTop = term.scrollHeight;
 
         let endpoint = "/api/agent/reach";
         if(promptText.toLowerCase().startsWith("/ody")) endpoint = "/api/odysseus";
 
-        term.innerHTML += `<div class="text-[#FF9900]">> PROCESSING DIRECTIVE...</div>`;
-        term.scrollTop = term.scrollHeight;
+        setAtlasState('PROCESSING');
+        playBeep(1600, 'sawtooth', 0.2);
 
         try {
             const res = await fetch(endpoint, {
@@ -553,8 +727,17 @@ async function handleOverseerDirective(e) {
                 body: JSON.stringify({ prompt: promptText })
             });
             const data = await res.json();
-            term.innerHTML += `<div class="text-[#00FF66]">${data.response.replace(/\n/g, '<br>')}</div>`;
+            
+            setAtlasState('RESPONDING');
+            playBeep(2400, 'sine', 0.1);
+            setTimeout(() => playBeep(2800, 'sine', 0.1), 150);
+            
+            term.innerHTML += `<div class="text-[#00E5FF] mb-2">${data.response.replace(/\n/g, '<br>')}</div>`;
+            term.scrollTop = term.scrollHeight;
+            
+            setTimeout(() => setAtlasState('IDLE'), 2000);
         } catch (err) {
+            setAtlasState('IDLE');
             term.innerHTML += `<div class="text-[#FF0033]">> ERROR: NEURAL LINK SEVERED OR TIMEOUT.</div>`;
         }
         term.scrollTop = term.scrollHeight;
