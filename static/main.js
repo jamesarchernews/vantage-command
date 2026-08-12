@@ -45,6 +45,7 @@ if ("geolocation" in navigator) {
 let currentViewState = { longitude: -118.2426, latitude: 34.0549, zoom: 9, pitch: 45, bearing: 0 };
 let persistentEmergencies = [];
 let latestAirTraffic = [];
+let latestSurveillance = []; // Added ALPR state array
 let activeRoutePath = null;
 let t = 0;
 
@@ -71,6 +72,7 @@ function connectWebSocket() {
             if (log) log.innerHTML = `<div class="text-[#FF0033] truncate">[${new Date().toLocaleTimeString()}] PING: ${data.emergencies[0].type}</div>` + log.innerHTML;
         }
         latestAirTraffic = data.air_traffic || [];
+        latestSurveillance = data.surveillance_nodes || []; // Capture ALPR nodes from payload
         const airStat = document.getElementById('stat-air');
         if (airStat) airStat.innerText = latestAirTraffic.length;
     };
@@ -98,21 +100,32 @@ async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
 function clearActiveRoute() { playBeep(800, 'square', 0.1); activeRoutePath = null; document.getElementById('navi-hud').classList.add('hidden'); }
 
 let selectedTargetCoords = null;
-function showTargetCard(obj, isAir = false) {
+// Updated function signature to handle ALPR Surveillance nodes
+function showTargetCard(obj, isAir = false, isSurveillance = false) {
     playBeep(1400, 'sine', 0.08);
     const modal = document.getElementById('target-modal');
     modal.classList.remove('hidden');
-    document.getElementById('target-id').innerText = obj.id || obj.callsign;
+    document.getElementById('target-id').innerText = obj.id || obj.callsign || 'ALPR-NODE';
     document.getElementById('target-coords').innerText = `${obj.coords[1].toFixed(4)}°, ${obj.coords[0].toFixed(4)}°`;
     selectedTargetCoords = obj.coords;
 
     if (isAir) {
-        modal.classList.remove('border-[#FF0033]');
+        modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
         document.getElementById('target-title').innerText = "AIRCRAFT VECTOR"; document.getElementById('target-title').className = "font-bold text-[#00FF66]";
         document.getElementById('target-type').innerText = "CIVILIAN AIR"; document.getElementById('target-threat').innerText = "NOMINAL"; document.getElementById('target-threat').className = "text-[#00FF66] font-bold";
         document.getElementById('target-age').innerText = "LIVE STREAM";
+    } else if (isSurveillance) {
+        modal.classList.remove('border-[#FF0033]');
+        modal.classList.add('border-[#ff00ff]'); // Add magenta border for ALPR
+        document.getElementById('target-title').innerText = "SURVEILLANCE NODE"; document.getElementById('target-title').className = "font-bold text-[#ff00ff]";
+        document.getElementById('target-type').innerText = obj.type || "ALPR"; document.getElementById('target-threat').innerText = obj.operator || "UNKNOWN"; document.getElementById('target-threat').className = "text-[#ff00ff] font-bold";
+        document.getElementById('target-age').innerText = "STATIC";
     } else {
-        if (obj.threat === 'RED') modal.classList.add('border-[#FF0033]'); else modal.classList.remove('border-[#FF0033]');
+        if (obj.threat === 'RED') {
+            modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]');
+        } else {
+            modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
+        }
         document.getElementById('target-title').innerText = "INCIDENT"; document.getElementById('target-title').className = "font-bold text-[#FF9900]";
         document.getElementById('target-type').innerText = obj.type; document.getElementById('target-threat').innerText = obj.threat === 'RED' ? 'PRIORITY 1' : 'PRIORITY 2';
         document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
@@ -136,14 +149,35 @@ function renderLayers() {
     const layers = [];
     if (userCoords) layers.push(new deck.ScatterplotLayer({ id: 'user', data: [{ coords: userCoords }], getPosition: d => d.coords, getFillColor: [0, 229, 255, 200], getRadius: (t * 2) + 10, radiusMinPixels: 6, radiusMaxPixels: 20, stroked: true, getLineColor: [255, 255, 255] }));
     if (activeRoutePath) layers.push(new deck.PathLayer({ id: 'route', data: [{ path: activeRoutePath }], getPath: d => d.path, getColor: [0, 229, 255, 220], getWidth: 8, widthMinPixels: 4 }));
+    
+    // Emergencies Layer
     layers.push(new deck.ScatterplotLayer({
         id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220 })),
         getPosition: d => d.coords, getFillColor: d => d.threat === 'RED' ? [255, 0, 51, d.alpha] : [255, 153, 0, d.alpha],
-        getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false); }
+        getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, false); }
     }));
+    
+    // Air Traffic Layer
     layers.push(new deck.ColumnLayer({
-        id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, true); }
+        id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, true, false); }
     }));
+
+    // New ALPR Surveillance Layer
+    if (latestSurveillance.length > 0) {
+        layers.push(new deck.ScatterplotLayer({
+            id: 'surveillance',
+            data: latestSurveillance,
+            getPosition: d => d.coords,
+            getFillColor: [255, 0, 255, 160], // High-visibility magenta
+            getRadius: 15,
+            radiusMinPixels: 4,
+            radiusMaxPixels: 12,
+            stroked: true,
+            getLineColor: [255, 255, 255, 200],
+            pickable: true,
+            onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
+        }));
+    }
 
     deckgl.setProps({ layers });
     requestAnimationFrame(renderLayers);
