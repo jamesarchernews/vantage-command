@@ -45,7 +45,7 @@ if ("geolocation" in navigator) {
 let currentViewState = { longitude: -118.2426, latitude: 34.0549, zoom: 9, pitch: 45, bearing: 0 };
 let persistentEmergencies = [];
 let latestAirTraffic = [];
-let latestSurveillance = []; // Added ALPR state array
+let latestSurveillance = []; // ALPR state array
 let activeRoutePath = null;
 let t = 0;
 
@@ -61,7 +61,10 @@ function initMapAndDeck() {
 }
 
 function connectWebSocket() {
-    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+    // Dynamic wss:// protocol fix for Render / Safari mixed content
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+    
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         const now = Date.now();
@@ -72,10 +75,12 @@ function connectWebSocket() {
             if (log) log.innerHTML = `<div class="text-[#FF0033] truncate">[${new Date().toLocaleTimeString()}] PING: ${data.emergencies[0].type}</div>` + log.innerHTML;
         }
         latestAirTraffic = data.air_traffic || [];
-        latestSurveillance = data.surveillance_nodes || []; // Capture ALPR nodes from payload
+        latestSurveillance = data.surveillance_nodes || []; 
         const airStat = document.getElementById('stat-air');
         if (airStat) airStat.innerText = latestAirTraffic.length;
     };
+
+    ws.onclose = () => { setTimeout(connectWebSocket, 3000); };
 }
 
 async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
@@ -100,7 +105,6 @@ async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
 function clearActiveRoute() { playBeep(800, 'square', 0.1); activeRoutePath = null; document.getElementById('navi-hud').classList.add('hidden'); }
 
 let selectedTargetCoords = null;
-// Updated function signature to handle ALPR Surveillance nodes
 function showTargetCard(obj, isAir = false, isSurveillance = false) {
     playBeep(1400, 'sine', 0.08);
     const modal = document.getElementById('target-modal');
@@ -116,16 +120,13 @@ function showTargetCard(obj, isAir = false, isSurveillance = false) {
         document.getElementById('target-age').innerText = "LIVE STREAM";
     } else if (isSurveillance) {
         modal.classList.remove('border-[#FF0033]');
-        modal.classList.add('border-[#ff00ff]'); // Add magenta border for ALPR
+        modal.classList.add('border-[#ff00ff]'); 
         document.getElementById('target-title').innerText = "SURVEILLANCE NODE"; document.getElementById('target-title').className = "font-bold text-[#ff00ff]";
         document.getElementById('target-type').innerText = obj.type || "ALPR"; document.getElementById('target-threat').innerText = obj.operator || "UNKNOWN"; document.getElementById('target-threat').className = "text-[#ff00ff] font-bold";
-        document.getElementById('target-age').innerText = "STATIC";
+        document.getElementById('target-age').innerText = "FLOCK-BACK / WARDRIVE FEED";
     } else {
-        if (obj.threat === 'RED') {
-            modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]');
-        } else {
-            modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
-        }
+        if (obj.threat === 'RED') { modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]'); } 
+        else { modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]'); }
         document.getElementById('target-title').innerText = "INCIDENT"; document.getElementById('target-title').className = "font-bold text-[#FF9900]";
         document.getElementById('target-type').innerText = obj.type; document.getElementById('target-threat').innerText = obj.threat === 'RED' ? 'PRIORITY 1' : 'PRIORITY 2';
         document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
@@ -150,30 +151,27 @@ function renderLayers() {
     if (userCoords) layers.push(new deck.ScatterplotLayer({ id: 'user', data: [{ coords: userCoords }], getPosition: d => d.coords, getFillColor: [0, 229, 255, 200], getRadius: (t * 2) + 10, radiusMinPixels: 6, radiusMaxPixels: 20, stroked: true, getLineColor: [255, 255, 255] }));
     if (activeRoutePath) layers.push(new deck.PathLayer({ id: 'route', data: [{ path: activeRoutePath }], getPath: d => d.path, getColor: [0, 229, 255, 220], getWidth: 8, widthMinPixels: 4 }));
     
-    // Emergencies Layer
     layers.push(new deck.ScatterplotLayer({
         id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220 })),
         getPosition: d => d.coords, getFillColor: d => d.threat === 'RED' ? [255, 0, 51, d.alpha] : [255, 153, 0, d.alpha],
         getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, false); }
     }));
     
-    // Air Traffic Layer
     layers.push(new deck.ColumnLayer({
         id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, true, false); }
     }));
 
-    // New ALPR Surveillance Layer
-    if (latestSurveillance.length > 0) {
+    if (latestSurveillance && latestSurveillance.length > 0) {
         layers.push(new deck.ScatterplotLayer({
             id: 'surveillance',
             data: latestSurveillance,
             getPosition: d => d.coords,
-            getFillColor: [255, 0, 255, 160], // High-visibility magenta
-            getRadius: 15,
-            radiusMinPixels: 4,
-            radiusMaxPixels: 12,
+            getFillColor: [255, 0, 255, 200],
+            getRadius: 60,
+            radiusMinPixels: 6,
+            radiusMaxPixels: 18,
             stroked: true,
-            getLineColor: [255, 255, 255, 200],
+            getLineColor: [255, 255, 255, 255],
             pickable: true,
             onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
         }));
@@ -254,7 +252,6 @@ async function searchStylebook() {
         </div>`).join('');
 }
 
-// --- MULTI-VOLUME CODEX LOGIC ---
 let fullCodexDatabase = [];
 let activeFolder = null;
 let currentVolume = 'ALL';
@@ -279,18 +276,12 @@ function setLibraryVolume(vol) {
     playBeep(1200, 'sine', 0.1);
     currentVolume = vol;
     
-    // Update tab button styles
     ['ALL', 'AP', 'STRUNK'].forEach(v => {
         const btn = document.getElementById(`lib-btn-${v}`);
-        if(btn) {
-            btn.className = "lib-tab px-3 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all";
-        }
+        if(btn) { btn.className = "lib-tab px-3 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all"; }
     });
     const activeBtn = document.getElementById(`lib-btn-${vol === 'ALL' ? 'ALL' : (vol === 'AP STYLE' ? 'AP' : 'STRUNK')}`);
-    if(activeBtn) {
-        activeBtn.className = "lib-tab active px-3 py-1 border border-[#00FF66] text-[#00FF66] bg-[#00FF66]/20 font-bold transition-all";
-    }
-
+    if(activeBtn) { activeBtn.className = "lib-tab active px-3 py-1 border border-[#00FF66] text-[#00FF66] bg-[#00FF66]/20 font-bold transition-all"; }
     buildCodexFolders();
     selectFolder('📚 GUIDES & CHAPTERS');
 }
@@ -299,18 +290,14 @@ function buildCodexFolders(filterQuery = '') {
     const foldersContainer = document.getElementById('codex-folders');
     const query = filterQuery.toUpperCase();
 
-    // Filter database by active volume
     let filteredDb = fullCodexDatabase;
-    if (currentVolume !== 'ALL') {
-        filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume);
-    }
+    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
 
     const chapterItems = filteredDb.filter(item => item.term.includes('CHAPTER:') || item.term.includes('★'));
     const standardItems = filteredDb.filter(item => !item.term.includes('CHAPTER:') && !item.term.includes('★'));
 
     let alphabetGroups = {};
     'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(letter => {
-        // Strip volume tags like "[AP STYLE] " when checking first letter
         alphabetGroups[letter] = standardItems.filter(item => {
             let cleanTerm = item.term.replace(/^\[.*?\]\s*/, '').toUpperCase();
             return cleanTerm.startsWith(letter);
@@ -319,23 +306,13 @@ function buildCodexFolders(filterQuery = '') {
 
     let html = '';
     if (chapterItems.length > 0) {
-        html += `
-            <div onclick="selectFolder('📚 GUIDES & CHAPTERS')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === '📚 GUIDES & CHAPTERS' ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}">
-                <span>📚 GUIDES & CHAPTERS</span>
-                <span class="text-[10px] opacity-70">(${chapterItems.length})</span>
-            </div>
-        `;
+        html += `<div onclick="selectFolder('📚 GUIDES & CHAPTERS')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === '📚 GUIDES & CHAPTERS' ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>📚 GUIDES & CHAPTERS</span><span class="text-[10px] opacity-70">(${chapterItems.length})</span></div>`;
     }
 
     Object.keys(alphabetGroups).forEach(letter => {
         const count = alphabetGroups[letter].length;
         if (count > 0 && (!query || letter.includes(query))) {
-            html += `
-                <div onclick="selectFolder('${letter}')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === letter ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}">
-                    <span>[FOLDER] ${letter}</span>
-                    <span class="text-[10px] opacity-70">(${count})</span>
-                </div>
-            `;
+            html += `<div onclick="selectFolder('${letter}')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === letter ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>[FOLDER] ${letter}</span><span class="text-[10px] opacity-70">(${count})</span></div>`;
         }
     });
 
@@ -348,9 +325,7 @@ function selectFolder(folderKey) {
     buildCodexFolders(document.getElementById('codex-search').value);
 
     let filteredDb = fullCodexDatabase;
-    if (currentVolume !== 'ALL') {
-        filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume);
-    }
+    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
 
     const indexList = document.getElementById('codex-index-list');
     const indexTitle = document.getElementById('index-title');
@@ -407,11 +382,7 @@ window.jumpToCodexTerm = function(targetTerm) {
             selectFolder(firstLetter);
         }
         loadIntoReadingPane(found.term);
-    } else {
-        playBeep(400, 'sawtooth', 0.2);
-    }
+    } else { playBeep(400, 'sawtooth', 0.2); }
 }
 
-function filterCodexIndex() {
-    buildCodexFolders(document.getElementById('codex-search').value);
-}
+function filterCodexIndex() { buildCodexFolders(document.getElementById('codex-search').value); }
