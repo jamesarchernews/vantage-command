@@ -1,4 +1,4 @@
-# BUILD: 012.3 (MASS SURVEILLANCE GRID INTEGRATION)
+# BUILD: 012.4 (RINGMAST4R FLOCK INTEGRATION & OSM FUSION)
 import asyncio
 import json
 import random
@@ -13,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, R
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="OSINT TACTICAL COMMAND", version="012.3")
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="012.4")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 os.makedirs("local_storage/notes", exist_ok=True)
@@ -30,7 +30,8 @@ if os.path.exists(AP_DB_FILE):
         ap_style_db = json.load(f)
 
 live_cad_dispatches = []
-LA_BBOX = {"lamin": 33.7, "lamax": 34.3, "lomin": -118.6, "lomax": -117.8}
+# Expanded Greater LA Bounding Box for maximum capture
+LA_BBOX = {"lamin": 33.5, "lamax": 34.5, "lomin": -118.8, "lomax": -117.5}
 CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
 
 cached_alpr_nodes = []
@@ -38,59 +39,68 @@ alpr_last_fetched = 0
 
 async def fetch_alpr_data(client):
     global cached_alpr_nodes, alpr_last_fetched
+    
     if time.time() - alpr_last_fetched > 3600:
-        overpass_url = "https://overpass-api.de/api/interpreter"
+        nodes = []
         
-        # Aggressively pulls ALL surveillance infrastructure, bypassing strict ALPR tags
-        query = f"""
-        [out:json][timeout:25];
-        (
-          node["man_made"="surveillance"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']});
-        );
-        out body;
-        """
+        # 1. FETCH FROM RINGMAST4R/FLOCK GITHUB REPOSITORY
         try:
-            res = await client.post(overpass_url, data={'data': query})
-            if res.status_code == 200:
-                nodes = []
-                for element in res.json().get("elements", []):
+            flock_url = "https://raw.githubusercontent.com/Ringmast4r/FLOCK/main/camera_networks.json"
+            res_flock = await client.get(flock_url, timeout=15.0)
+            if res_flock.status_code == 200:
+                data = res_flock.json()
+                # Parse through the network JSON (handles GeoJSON or lists)
+                if "features" in data:
+                    for f in data["features"]:
+                        coords = f.get("geometry", {}).get("coordinates", [0,0])
+                        if LA_BBOX["lomin"] <= coords[0] <= LA_BBOX["lomax"] and LA_BBOX["lamin"] <= coords[1] <= LA_BBOX["lamax"]:
+                            nodes.append({"coords": [coords[0], coords[1]], "type": "ALPR NODE (FLOCK-NET)", "operator": "NETWORKED ALPR"})
+                elif isinstance(data, list):
+                    for item in data:
+                        lat = item.get("lat") or item.get("latitude")
+                        lon = item.get("lon") or item.get("lng") or item.get("longitude")
+                        if lat and lon and LA_BBOX["lomin"] <= lon <= LA_BBOX["lomax"] and LA_BBOX["lamin"] <= lat <= LA_BBOX["lamax"]:
+                            nodes.append({"coords": [lon, lat], "type": "ALPR NODE (FLOCK-NET)", "operator": item.get("operator", "NETWORKED ALPR")})
+        except Exception as e:
+            print(f"Ringmast4r fetch failed: {e}")
+
+        # 2. FETCH FROM OSM / DEFLOCK VIA OVERPASS
+        try:
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["man_made"="surveillance"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']});
+            );
+            out body;
+            """
+            res_osm = await client.post(overpass_url, data={'data': query})
+            if res_osm.status_code == 200:
+                for element in res_osm.json().get("elements", []):
                     tags = element.get("tags", {})
-                    # Check DeFlock specific tags
                     is_alpr = tags.get("surveillance:type") == "ALPR" or tags.get("camera:type") == "alpr"
                     op = tags.get("operator", "MUNICIPAL")
-                    
-                    nodes.append({
-                        "coords": [element["lon"], element["lat"]],
-                        "type": "ALPR NODE" if is_alpr else "SURVEILLANCE CAM",
-                        "operator": op,
-                        "is_alpr": is_alpr
-                    })
-                
-                if nodes:
-                    cached_alpr_nodes = nodes
-                    alpr_last_fetched = time.time()
-                else:
-                    raise Exception("No nodes found in Overpass")
-            else:
-                raise Exception("Overpass API Failed")
-        except Exception:
-            if not cached_alpr_nodes:
-                fallback = []
-                operators = ["Flock Safety", "Motorola/Vigilant", "Genetec", "LAPD"]
-                for _ in range(45):
-                    fallback.append({
-                        "coords": [-118.24 + random.uniform(-0.2, 0.2), 34.05 + random.uniform(-0.15, 0.15)],
-                        "type": "ALPR (FALLBACK)",
-                        "operator": random.choice(operators),
-                        "is_alpr": True
-                    })
-                cached_alpr_nodes = fallback
-                alpr_last_fetched = time.time() - 3300 
+                    nodes.append({"coords": [element["lon"], element["lat"]], "type": "ALPR NODE" if is_alpr else "SURVEILLANCE CAM", "operator": op})
+        except Exception as e:
+            print(f"Overpass fetch failed: {e}")
+
+        # 3. HIGH-DENSITY LOCAL SIMULATION FALLBACK (If APIs rate limit)
+        if not nodes:
+            operators = ["Flock Safety", "Motorola/Vigilant", "Genetec", "LAPD"]
+            for _ in range(400):  # Generate a massive grid if APIs drop
+                nodes.append({
+                    "coords": [-118.24 + random.uniform(-0.5, 0.5), 34.05 + random.uniform(-0.4, 0.4)],
+                    "type": "ALPR NODE (FALLBACK)",
+                    "operator": random.choice(operators)
+                })
+
+        cached_alpr_nodes = nodes
+        alpr_last_fetched = time.time()
                 
     return cached_alpr_nodes
 
 async def fetch_osint_data():
-    payload = {"build": "012.3", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
+    payload = {"build": "012.4", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
     global live_cad_dispatches
     payload["emergencies"].extend(live_cad_dispatches)
     live_cad_dispatches = [] 
