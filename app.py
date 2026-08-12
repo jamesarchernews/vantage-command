@@ -1,4 +1,4 @@
-# BUILD: 011.1 (CLOUD READY)
+# BUILD: 012.0 (CLOUD READY - ALPR INTEGRATION)
 import asyncio
 import json
 import random
@@ -6,13 +6,14 @@ import httpx
 import io
 import os
 import re
+import time
 import piexif
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="OSINT TACTICAL COMMAND", version="0.11.1")
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="012.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 os.makedirs("local_storage/notes", exist_ok=True)
@@ -31,13 +32,47 @@ if os.path.exists(AP_DB_FILE):
 live_cad_dispatches = []
 CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
 
+# IN-MEMORY CACHE FOR ALPR NODES
+cached_alpr_nodes = []
+alpr_last_fetched = 0
+
+async def fetch_alpr_data(client):
+    global cached_alpr_nodes, alpr_last_fetched
+    # Refresh cache every hour (3600 seconds) to avoid Overpass IP bans
+    if time.time() - alpr_last_fetched > 3600:
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        query = f"""
+        [out:json][timeout:10];
+        (
+          node["surveillance:type"="ALPR"]({CA_BBOX['lamin']},{CA_BBOX['lomin']},{CA_BBOX['lamax']},{CA_BBOX['lomax']});
+        );
+        out body;
+        """
+        try:
+            res = await client.post(overpass_url, data={'data': query})
+            if res.status_code == 200:
+                nodes = []
+                for element in res.json().get("elements", []):
+                    nodes.append({
+                        "coords": [element["lon"], element["lat"]],
+                        "type": "ALPR",
+                        "operator": element.get("tags", {}).get("operator", "UNKNOWN")
+                    })
+                cached_alpr_nodes = nodes
+                alpr_last_fetched = time.time()
+        except Exception:
+            pass
+    return cached_alpr_nodes
+
 async def fetch_osint_data():
-    payload = {"build": "011.1", "air_traffic": [], "seismic": [], "emergencies": []}
+    payload = {"build": "012.0", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
     global live_cad_dispatches
     payload["emergencies"].extend(live_cad_dispatches)
     live_cad_dispatches = [] 
     
     async with httpx.AsyncClient(timeout=4.0) as client:
+        payload["surveillance_nodes"] = await fetch_alpr_data(client)
+
         try:
             url_air = f"https://opensky-network.org/api/states/all?lamin={CA_BBOX['lamin']}&lamax={CA_BBOX['lamax']}&lomin={CA_BBOX['lomin']}&lomax={CA_BBOX['lomax']}"
             res_air = await client.get(url_air)
