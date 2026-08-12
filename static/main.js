@@ -32,10 +32,42 @@ function switchModule(modId) {
     document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
     document.getElementById('mod-' + modId).classList.add('active');
     event.currentTarget.classList.add('active');
-    if(modId === 'vault') loadVault(); 
+    if(modId === 'vault') renderVaultDirectory(); 
     if(modId === 'editorial') searchStylebook();
     if(modId === 'handbook') loadFullHandbook();
 }
+
+// --- TELEMETRY TOGGLE ---
+let telemetryExpanded = true;
+function toggleTelemetry() {
+    telemetryExpanded = !telemetryExpanded;
+    const box = document.getElementById('telemetry-box');
+    const content = document.getElementById('telemetry-content');
+    const collapsed = document.getElementById('telemetry-collapsed');
+    const btn = document.getElementById('tel-toggle-btn');
+    
+    if (telemetryExpanded) {
+        content.classList.remove('hidden');
+        collapsed.classList.add('hidden');
+        btn.innerText = '[ - ]';
+        box.classList.remove('w-auto', 'py-1', 'px-3');
+        box.classList.add('w-72', 'p-0');
+    } else {
+        content.classList.add('hidden');
+        collapsed.classList.remove('hidden');
+        btn.innerText = '[ + ]';
+        box.classList.remove('w-72', 'p-0');
+        box.classList.add('w-auto', 'py-1', 'px-3');
+    }
+}
+
+function syncMiniTicker() {
+    if(!telemetryExpanded) {
+        document.getElementById('stat-air-mini').innerText = latestAirTraffic.length;
+        document.getElementById('stat-emg-mini').innerText = persistentEmergencies.length;
+    }
+}
+setInterval(syncMiniTicker, 2000);
 
 let userCoords = null;
 if ("geolocation" in navigator) {
@@ -45,7 +77,7 @@ if ("geolocation" in navigator) {
 let currentViewState = { longitude: -118.2426, latitude: 34.0549, zoom: 9, pitch: 45, bearing: 0 };
 let persistentEmergencies = [];
 let latestAirTraffic = [];
-let latestSurveillance = []; // ALPR state array
+let latestSurveillance = [];
 let activeRoutePath = null;
 let t = 0;
 
@@ -61,7 +93,6 @@ function initMapAndDeck() {
 }
 
 function connectWebSocket() {
-    // Dynamic wss:// protocol fix for Render / Safari mixed content
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
     
@@ -117,20 +148,17 @@ function showTargetCard(obj, isAir = false, isSurveillance = false) {
         modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
         document.getElementById('target-title').innerText = "AIRCRAFT VECTOR"; document.getElementById('target-title').className = "font-bold text-[#00FF66]";
         document.getElementById('target-type').innerText = "CIVILIAN AIR"; document.getElementById('target-threat').innerText = "NOMINAL"; document.getElementById('target-threat').className = "text-[#00FF66] font-bold";
-        document.getElementById('target-age').innerText = "LIVE STREAM";
     } else if (isSurveillance) {
         modal.classList.remove('border-[#FF0033]');
         modal.classList.add('border-[#ff00ff]'); 
         document.getElementById('target-title').innerText = "SURVEILLANCE NODE"; document.getElementById('target-title').className = "font-bold text-[#ff00ff]";
         document.getElementById('target-type').innerText = obj.type || "ALPR"; document.getElementById('target-threat').innerText = obj.operator || "UNKNOWN"; document.getElementById('target-threat').className = "text-[#ff00ff] font-bold";
-        document.getElementById('target-age').innerText = "FLOCK-BACK / WARDRIVE FEED";
     } else {
         if (obj.threat === 'RED') { modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]'); } 
         else { modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]'); }
         document.getElementById('target-title').innerText = "INCIDENT"; document.getElementById('target-title').className = "font-bold text-[#FF9900]";
         document.getElementById('target-type').innerText = obj.type; document.getElementById('target-threat').innerText = obj.threat === 'RED' ? 'PRIORITY 1' : 'PRIORITY 2';
         document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
-        document.getElementById('target-age').innerText = `${Math.floor((Date.now() - obj.timestamp) / 1000)} SEC AGO`;
     }
 
     document.getElementById('lock-cam-btn').onclick = () => { deckgl.setProps({ initialViewState: { ...currentViewState, longitude: selectedTargetCoords[0], latitude: selectedTargetCoords[1], zoom: 14, transitionDuration: 1000 }}); };
@@ -163,17 +191,7 @@ function renderLayers() {
 
     if (latestSurveillance && latestSurveillance.length > 0) {
         layers.push(new deck.ScatterplotLayer({
-            id: 'surveillance',
-            data: latestSurveillance,
-            getPosition: d => d.coords,
-            getFillColor: [255, 0, 255, 200],
-            getRadius: 60,
-            radiusMinPixels: 6,
-            radiusMaxPixels: 18,
-            stroked: true,
-            getLineColor: [255, 255, 255, 255],
-            pickable: true,
-            onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
+            id: 'surveillance', data: latestSurveillance, getPosition: d => d.coords, getFillColor: [255, 0, 255, 200], getRadius: 60, radiusMinPixels: 6, radiusMaxPixels: 18, stroked: true, getLineColor: [255, 255, 255, 255], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
         }));
     }
 
@@ -181,19 +199,91 @@ function renderLayers() {
     requestAnimationFrame(renderLayers);
 }
 
-async function saveFieldNotes() {
-    const content = document.getElementById('field-notes').value;
-    if(!content) return;
-    document.getElementById('save-status').innerText = "SAVING...";
-    await fetch('/api/save-note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
-    playBeep(2000, 'sine', 0.2);
-    document.getElementById('save-status').innerText = "ENCRYPTION: LOCAL | SAVED";
+// --- WEBCRYPTO AES-GCM ZERO-TRUST ENCRYPTION UTILS ---
+async function deriveKey(password, salt) {
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), {name: "PBKDF2"}, false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+        {name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256"},
+        keyMaterial, {name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]
+    );
 }
 
-async function loadVault() {
-    const res = await fetch('/api/vault');
-    const data = await res.json();
-    document.getElementById('vault-directory').innerHTML = data.reverse().map(c => `
+async function encryptData(text, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(password, salt);
+    const enc = new TextEncoder();
+    const encrypted = await crypto.subtle.encrypt({name: "AES-GCM", iv: iv}, key, enc.encode(text));
+    return JSON.stringify({ salt: Array.from(salt), iv: Array.from(iv), data: Array.from(new Uint8Array(encrypted)) });
+}
+
+async function decryptData(encryptedString, password) {
+    try {
+        const obj = JSON.parse(encryptedString);
+        const salt = new Uint8Array(obj.salt);
+        const iv = new Uint8Array(obj.iv);
+        const data = new Uint8Array(obj.data);
+        const key = await deriveKey(password, salt);
+        const decrypted = await crypto.subtle.decrypt({name: "AES-GCM", iv: iv}, key, data);
+        return new TextDecoder().decode(decrypted);
+    } catch(e) { return null; }
+}
+
+function downloadSecureFile(filename, content) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = window.URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+}
+
+// --- NOTEBOOK COMMANDS ---
+async function handleNotebookCommand(e) {
+    if (e.key === 'Enter') {
+        const input = document.getElementById('note-cmd');
+        const notesArea = document.getElementById('field-notes');
+        const cmd = input.value.trim().toLowerCase();
+        
+        if (cmd === ':ts' || cmd === ':timestamp') {
+            notesArea.value += `\n[${new Date().toISOString()}] - `;
+        } else if (cmd === ':clear') {
+            notesArea.value = '';
+        } else if (cmd === ':export') {
+            downloadSecureFile(`Field_Log_${Date.now()}.txt`, notesArea.value);
+        } else if (cmd === ':encrypt') {
+            const pass = prompt("Enter encryption passphrase for this file:");
+            if (pass) {
+                const enc = await encryptData(notesArea.value, pass);
+                downloadSecureFile(`Encrypted_Log_${Date.now()}.enc`, enc);
+                document.getElementById('save-status').innerText = "ENCRYPTION: AES-GCM | EXPORTED";
+            }
+        }
+        input.value = '';
+    }
+}
+
+// --- IN-MEMORY CONTACTS CRM ---
+let localVaultMemory = [];
+
+function addToVault() {
+    const payload = { 
+        name: document.getElementById('vault-name').value, 
+        status: document.getElementById('vault-status').value, 
+        phone: document.getElementById('vault-phone').value, 
+        email: document.getElementById('vault-email').value, 
+        notes: document.getElementById('vault-notes').value 
+    };
+    if(!payload.name) return;
+    localVaultMemory.push(payload);
+    playBeep(1600, 'sine', 0.15);
+    renderVaultDirectory();
+    document.getElementById('vault-name').value = '';
+    document.getElementById('vault-notes').value = '';
+}
+
+function renderVaultDirectory() {
+    document.getElementById('vault-directory').innerHTML = localVaultMemory.map((c, i) => `
         <div class="border border-[#FF9900]/50 p-3 bg-black/60 mb-2">
             <div class="flex justify-between font-bold text-[#00E5FF] border-b border-[#00E5FF]/30 pb-1 mb-1">
                 <span>${c.name}</span><span class="text-[10px] text-[#FF9900] uppercase bg-[#FF9900]/10 px-2 py-0.5">${c.status}</span>
@@ -203,14 +293,34 @@ async function loadVault() {
         </div>`).join('');
 }
 
-async function addToVault() {
-    const payload = { name: document.getElementById('vault-name').value, status: document.getElementById('vault-status').value, phone: document.getElementById('vault-phone').value, email: document.getElementById('vault-email').value, notes: document.getElementById('vault-notes').value };
-    if(!payload.name) return;
-    await fetch('/api/vault', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    playBeep(1600, 'sine', 0.15);
-    loadVault();
+async function exportVault() {
+    if(localVaultMemory.length === 0) return alert("Memory is empty.");
+    const pass = prompt("Enter passphrase to encrypt Source Vault:");
+    if(!pass) return;
+    const enc = await encryptData(JSON.stringify(localVaultMemory), pass);
+    downloadSecureFile(`Source_Vault_${Date.now()}.enc`, enc);
 }
 
+function loadVaultFile(e) {
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        const pass = prompt("Enter decryption passphrase:");
+        if(!pass) return;
+        const decrypted = await decryptData(event.target.result, pass);
+        if(decrypted) {
+            localVaultMemory = JSON.parse(decrypted);
+            renderVaultDirectory();
+            playBeep(2000, 'sine', 0.2);
+        } else {
+            alert("Decryption failed. Incorrect passphrase.");
+        }
+    };
+    reader.readAsText(file);
+}
+
+// --- EXIF SCRUBBER ---
 async function scrubEXIF() {
     const file = document.getElementById('image-file').files[0];
     if(!file) return;
@@ -222,6 +332,7 @@ async function scrubEXIF() {
     }
 }
 
+// --- AP EDITOR ACCORDIONS & ENCRYPTION ---
 async function runAPStyleCheck() {
     const text = document.getElementById('workbench-text').value;
     if(!text) return;
@@ -239,19 +350,37 @@ async function runAPStyleCheck() {
         </div>`).join('');
 }
 
+function toggleAccordion(id) {
+    const content = document.getElementById(id);
+    if(content.classList.contains('hidden')) { content.classList.remove('hidden'); } else { content.classList.add('hidden'); }
+}
+
 async function searchStylebook() {
     const q = document.getElementById('stylebook-search').value;
     const res = await fetch(`/api/stylebook/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     const container = document.getElementById('stylebook-results');
-    if (!data.results || data.results.length === 0) { container.innerHTML = '<div class="text-gray-500">> No match found.</div>'; return; }
-    container.innerHTML = data.results.map(r => `
-        <div class="border-b border-[#00E5FF]/30 pb-2 mb-2 bg-black/40 p-2">
-            <div class="text-[#00E5FF] font-bold uppercase tracking-wider">${r.term}</div>
-            <div class="text-gray-300 text-[11px] mt-1">${r.rule}</div>
+    if (!data.results || data.results.length === 0) { container.innerHTML = '<div class="text-[#00E5FF]/50">> NO MATCH FOUND.</div>'; return; }
+    container.innerHTML = data.results.map((r, idx) => `
+        <div class="border border-[#00E5FF]/30 bg-black mb-1">
+            <div onclick="toggleAccordion('acc-${idx}')" class="cursor-pointer p-2 bg-[#00E5FF]/10 text-[#00E5FF] font-bold uppercase tracking-wider flex justify-between items-center hover:bg-[#00E5FF]/20 transition-all">
+                <span>${r.term}</span> <span>▼</span>
+            </div>
+            <div id="acc-${idx}" class="hidden p-2 text-gray-300 text-[11px] border-t border-[#00E5FF]/30">${r.rule}</div>
         </div>`).join('');
 }
 
+async function saveEncryptedDraft() {
+    const draft = document.getElementById('workbench-text').value;
+    if(!draft) return;
+    const pass = prompt("Enter passphrase to secure Editor Draft:");
+    if(pass) {
+        const enc = await encryptData(draft, pass);
+        downloadSecureFile(`AP_Draft_${Date.now()}.enc`, enc);
+    }
+}
+
+// --- GLOBAL CODEX SEARCH & DIRECTORY ---
 let fullCodexDatabase = [];
 let activeFolder = null;
 let currentVolume = 'ALL';
@@ -275,7 +404,6 @@ async function loadFullHandbook() {
 function setLibraryVolume(vol) {
     playBeep(1200, 'sine', 0.1);
     currentVolume = vol;
-    
     ['ALL', 'AP', 'STRUNK'].forEach(v => {
         const btn = document.getElementById(`lib-btn-${v}`);
         if(btn) { btn.className = "lib-tab px-3 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all"; }
@@ -286,13 +414,32 @@ function setLibraryVolume(vol) {
     selectFolder('📚 GUIDES & CHAPTERS');
 }
 
+function filterGlobalCodex() {
+    const query = document.getElementById('global-codex-search').value.toUpperCase();
+    buildCodexFolders(query); 
+    
+    if (query.length > 1) {
+        const indexList = document.getElementById('codex-index-list');
+        const indexTitle = document.getElementById('index-title');
+        const indexCount = document.getElementById('index-count');
+
+        const results = fullCodexDatabase.filter(item => item.term.toUpperCase().includes(query) || item.rule.toUpperCase().includes(query));
+
+        indexTitle.innerText = `[ GLOBAL SEARCH ]`;
+        indexCount.innerText = `${results.length} HITS`;
+
+        indexList.innerHTML = results.map((entry) => `
+            <div onclick='loadIntoReadingPane(${JSON.stringify(entry.term)})' class="cursor-pointer px-2 py-1.5 text-xs font-mono text-[#00FF66] hover:bg-[#00FF66] hover:text-black transition-colors truncate border-b border-[#00FF66]/10">
+                > ${entry.term}
+            </div>
+        `).join('') || '<div class="text-xs text-[#FF9900] p-2">NO MATCHES</div>';
+    }
+}
+
 function buildCodexFolders(filterQuery = '') {
     const foldersContainer = document.getElementById('codex-folders');
     const query = filterQuery.toUpperCase();
-
-    let filteredDb = fullCodexDatabase;
-    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
-
+    let filteredDb = currentVolume !== 'ALL' ? fullCodexDatabase.filter(item => item.library === currentVolume) : fullCodexDatabase;
     const chapterItems = filteredDb.filter(item => item.term.includes('CHAPTER:') || item.term.includes('★'));
     const standardItems = filteredDb.filter(item => !item.term.includes('CHAPTER:') && !item.term.includes('★'));
 
@@ -312,21 +459,18 @@ function buildCodexFolders(filterQuery = '') {
     Object.keys(alphabetGroups).forEach(letter => {
         const count = alphabetGroups[letter].length;
         if (count > 0 && (!query || letter.includes(query))) {
-            html += `<div onclick="selectFolder('${letter}')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === letter ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>[FOLDER] ${letter}</span><span class="text-[10px] opacity-70">(${count})</span></div>`;
+            html += `<div onclick="selectFolder('${letter}')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === letter ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>${letter}</span><span class="text-[10px] opacity-70">(${count})</span></div>`;
         }
     });
-
-    foldersContainer.innerHTML = html || '<div class="text-xs text-[#FF9900] p-2">NO FOLDERS FOUND</div>';
+    foldersContainer.innerHTML = html || '<div class="text-xs text-[#FF9900] p-2">EMPTY DIRECTORY</div>';
 }
 
 function selectFolder(folderKey) {
     playBeep(1400, 'square', 0.05);
     activeFolder = folderKey;
-    buildCodexFolders(document.getElementById('codex-search').value);
+    buildCodexFolders(document.getElementById('global-codex-search').value);
 
-    let filteredDb = fullCodexDatabase;
-    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
-
+    let filteredDb = currentVolume !== 'ALL' ? fullCodexDatabase.filter(item => item.library === currentVolume) : fullCodexDatabase;
     const indexList = document.getElementById('codex-index-list');
     const indexTitle = document.getElementById('index-title');
     const indexCount = document.getElementById('index-count');
@@ -365,7 +509,6 @@ function loadIntoReadingPane(termKey) {
     playBeep(1800, 'sine', 0.08);
     const entry = fullCodexDatabase.find(i => i.term === termKey);
     if (!entry) return;
-
     document.getElementById('reading-term').innerText = entry.term;
     document.getElementById('reading-rule').innerHTML = formatCodexRuleText(entry.rule);
     document.getElementById('reading-status').innerText = "BUFFER: LOADED";
@@ -385,4 +528,35 @@ window.jumpToCodexTerm = function(targetTerm) {
     } else { playBeep(400, 'sawtooth', 0.2); }
 }
 
-function filterCodexIndex() { buildCodexFolders(document.getElementById('codex-search').value); }
+// --- AI OVERSEER ROUTING ---
+async function handleOverseerDirective(e) {
+    if (e.key === 'Enter') {
+        const input = document.getElementById('overseer-input');
+        const term = document.getElementById('overseer-terminal');
+        const promptText = input.value.trim();
+        if(!promptText) return;
+
+        term.innerHTML += `<div class="text-white">> USER: ${promptText}</div>`;
+        input.value = '';
+        term.scrollTop = term.scrollHeight;
+
+        let endpoint = "/api/agent/reach";
+        if(promptText.toLowerCase().startsWith("/ody")) endpoint = "/api/odysseus";
+
+        term.innerHTML += `<div class="text-[#FF9900]">> PROCESSING DIRECTIVE...</div>`;
+        term.scrollTop = term.scrollHeight;
+
+        try {
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: promptText })
+            });
+            const data = await res.json();
+            term.innerHTML += `<div class="text-[#00FF66]">${data.response.replace(/\n/g, '<br>')}</div>`;
+        } catch (err) {
+            term.innerHTML += `<div class="text-[#FF0033]">> ERROR: NEURAL LINK SEVERED OR TIMEOUT.</div>`;
+        }
+        term.scrollTop = term.scrollHeight;
+    }
+}

@@ -1,0 +1,772 @@
+# BUILD: 012.4 (RINGMAST4R FLOCK INTEGRATION & OSM FUSION)
+import asyncio
+import json
+import random
+import httpx
+import io
+import os
+import re
+import time
+import piexif
+from datetime import datetime
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="012.4")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+os.makedirs("local_storage/notes", exist_ok=True)
+os.makedirs("local_storage/vault", exist_ok=True)
+VAULT_FILE = "local_storage/vault/source_vault.json"
+AP_DB_FILE = "ap_style_database.json"
+
+if not os.path.exists(VAULT_FILE):
+    with open(VAULT_FILE, "w", encoding="utf-8") as f: json.dump([], f)
+
+ap_style_db = []
+if os.path.exists(AP_DB_FILE):
+    with open(AP_DB_FILE, "r", encoding="utf-8") as f: 
+        ap_style_db = json.load(f)
+
+live_cad_dispatches = []
+# Expanded Greater LA Bounding Box for maximum capture
+LA_BBOX = {"lamin": 33.5, "lamax": 34.5, "lomin": -118.8, "lomax": -117.5}
+CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
+
+cached_alpr_nodes = []
+alpr_last_fetched = 0
+
+async def fetch_alpr_data(client):
+    global cached_alpr_nodes, alpr_last_fetched
+    
+    if time.time() - alpr_last_fetched > 3600:
+        nodes = []
+        
+        # 1. FETCH FROM RINGMAST4R/FLOCK GITHUB REPOSITORY
+        try:
+            flock_url = "https://raw.githubusercontent.com/Ringmast4r/FLOCK/main/camera_networks.json"
+            res_flock = await client.get(flock_url, timeout=15.0)
+            if res_flock.status_code == 200:
+                data = res_flock.json()
+                # Parse through the network JSON (handles GeoJSON or lists)
+                if "features" in data:
+                    for f in data["features"]:
+                        coords = f.get("geometry", {}).get("coordinates", [0,0])
+                        if LA_BBOX["lomin"] <= coords[0] <= LA_BBOX["lomax"] and LA_BBOX["lamin"] <= coords[1] <= LA_BBOX["lamax"]:
+                            nodes.append({"coords": [coords[0], coords[1]], "type": "ALPR NODE (FLOCK-NET)", "operator": "NETWORKED ALPR"})
+                elif isinstance(data, list):
+                    for item in data:
+                        lat = item.get("lat") or item.get("latitude")
+                        lon = item.get("lon") or item.get("lng") or item.get("longitude")
+                        if lat and lon and LA_BBOX["lomin"] <= lon <= LA_BBOX["lomax"] and LA_BBOX["lamin"] <= lat <= LA_BBOX["lamax"]:
+                            nodes.append({"coords": [lon, lat], "type": "ALPR NODE (FLOCK-NET)", "operator": item.get("operator", "NETWORKED ALPR")})
+        except Exception as e:
+            print(f"Ringmast4r fetch failed: {e}")
+
+        # 2. FETCH FROM OSM / DEFLOCK VIA OVERPASS
+        try:
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["man_made"="surveillance"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']});
+            );
+            out body;
+            """
+            res_osm = await client.post(overpass_url, data={'data': query})
+            if res_osm.status_code == 200:
+                for element in res_osm.json().get("elements", []):
+                    tags = element.get("tags", {})
+                    is_alpr = tags.get("surveillance:type") == "ALPR" or tags.get("camera:type") == "alpr"
+                    op = tags.get("operator", "MUNICIPAL")
+                    nodes.append({"coords": [element["lon"], element["lat"]], "type": "ALPR NODE" if is_alpr else "SURVEILLANCE CAM", "operator": op})
+        except Exception as e:
+            print(f"Overpass fetch failed: {e}")
+
+        # 3. HIGH-DENSITY LOCAL SIMULATION FALLBACK (If APIs rate limit)
+        if not nodes:
+            operators = ["Flock Safety", "Motorola/Vigilant", "Genetec", "LAPD"]
+            for _ in range(400):  # Generate a massive grid if APIs drop
+                nodes.append({
+                    "coords": [-118.24 + random.uniform(-0.5, 0.5), 34.05 + random.uniform(-0.4, 0.4)],
+                    "type": "ALPR NODE (FALLBACK)",
+                    "operator": random.choice(operators)
+                })
+
+        cached_alpr_nodes = nodes
+        alpr_last_fetched = time.time()
+                
+    return cached_alpr_nodes
+
+async def fetch_osint_data():
+    payload = {"build": "012.4", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
+    global live_cad_dispatches
+    payload["emergencies"].extend(live_cad_dispatches)
+    live_cad_dispatches = [] 
+    
+    async with httpx.AsyncClient(timeout=4.0) as client:
+        payload["surveillance_nodes"] = await fetch_alpr_data(client)
+
+        try:
+            url_air = f"https://opensky-network.org/api/states/all?lamin={CA_BBOX['lamin']}&lamax={CA_BBOX['lamax']}&lomin={CA_BBOX['lomin']}&lomax={CA_BBOX['lomax']}"
+            res_air = await client.get(url_air)
+            if res_air.status_code == 200:
+                for s in (res_air.json().get("states") or [])[:50]:
+                    if s[5] and s[6] and s[7]:
+                        payload["air_traffic"].append({"coords": [s[5], s[6], min(s[7], 12000)], "callsign": s[1].strip() if s[1] else "NAV-VECTOR", "heading": s[10] or 0})
+            else: raise Exception("Rate Limited")
+        except Exception:
+            for _ in range(12):
+                payload["air_traffic"].append({"coords": [-118.24 + random.uniform(-0.8, 0.8), 34.05 + random.uniform(-0.8, 0.8), random.randint(1000, 10000)], "callsign": f"SIM-{random.randint(100,999)}", "simulated": True})
+
+        try:
+            res_eq = await client.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson")
+            if res_eq.status_code == 200:
+                for f in res_eq.json().get("features", []):
+                    coords, mag = f["geometry"]["coordinates"], f["properties"]["mag"]
+                    if -124.0 <= coords[0] <= -114.0 and 32.0 <= coords[1] <= 42.0:
+                        payload["seismic"].append({"id": f["id"], "coords": [coords[0], coords[1]], "mag": mag})
+        except Exception: pass
+
+        try:
+            res_nws = await client.get("https://api.weather.gov/alerts/active?area=CA", headers={"User-Agent": "VantageCommand/1.0"})
+            if res_nws.status_code == 200:
+                for a in res_nws.json().get("features", [])[:10]:
+                    event_type = a.get("properties", {}).get("event", "HAZARD").upper()
+                    if "FLOOD" in event_type or "SURF" in event_type: continue 
+                    payload["emergencies"].append({"coords": [-118.24 + random.uniform(-0.4, 0.4), 34.05 + random.uniform(-0.4, 0.4)], "type": f"NWS: {event_type}", "threat": "AMBER"})
+        except Exception: pass
+
+    return payload
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            await websocket.send_text(json.dumps(await fetch_osint_data()))
+            await asyncio.sleep(3.5)
+    except WebSocketDisconnect: pass
+
+@app.post("/api/save-note")
+async def save_note(request: Request):
+    data = await request.json()
+    filename = f"local_storage/notes/Field_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    with open(filename, "w", encoding="utf-8") as f: f.write(data.get("content", ""))
+    return {"status": "success", "file": filename}
+
+@app.get("/api/vault")
+async def get_vault():
+    with open(VAULT_FILE, "r", encoding="utf-8") as f: return json.load(f)
+
+@app.post("/api/vault")
+async def add_to_vault(request: Request):
+    data = await request.json()
+    with open(VAULT_FILE, "r", encoding="utf-8") as f: vault = json.load(f)
+    vault.append(data)
+    with open(VAULT_FILE, "w", encoding="utf-8") as f: json.dump(vault, f)
+    return {"status": "success"}
+
+@app.post("/api/scrub-exif")
+async def scrub_exif(file: UploadFile = File(...)):
+    img_bytes = await file.read()
+    try:
+        clean = io.BytesIO()
+        piexif.remove(img_bytes, clean)
+        clean.seek(0)
+        return StreamingResponse(clean, media_type="image/jpeg", headers={"Content-Disposition": f"attachment; filename=CLEANED_{file.filename}"})
+    except Exception: return {"error": "Could not scrub EXIF."}
+
+@app.get("/api/stylebook/search")
+async def search_stylebook(q: str = ""):
+    query = q.lower()
+    if not query or len(query) < 2: return {"results": ap_style_db[:20]} 
+    return {"results": [entry for entry in ap_style_db if query in entry["term"].lower() or query in entry["rule"].lower()][:30]}
+
+@app.get("/api/stylebook/all")
+async def get_all_stylebook():
+    return {"database": sorted(ap_style_db, key=lambda x: x['term'].lower())}
+
+@app.post("/api/check-style")
+async def check_style(request: Request):
+    text = (await request.json()).get("text", "")
+    flags = []
+    red_flags = [{"pattern": r"(?i)\b(yesterday|today|tomorrow)\b", "suggestion": "Use specific day of week.", "type": "AP Rule: Dates"}]
+    for rule in red_flags:
+        for match in re.finditer(rule["pattern"], text): flags.append({"type": rule["type"], "error": match.group(0), "suggestion": rule["suggestion"], "category": "AP Style"})
+
+    words_in_text = set(re.findall(r'\b\w+\b', text.lower()))
+    for entry in ap_style_db:
+        term_lower = entry["term"].lower()
+        if " " not in term_lower:
+            if term_lower in words_in_text: flags.append({"type": f"Reference: {entry['term']}", "error": entry["term"], "suggestion": entry["rule"], "category": "AP Style"})
+        else:
+            if re.search(rf"\b{re.escape(term_lower)}\b", text.lower()): flags.append({"type": f"Reference: {entry['term']}", "error": entry["term"], "suggestion": entry["rule"], "category": "AP Style"})
+
+    return {"flags": flags}
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    with open("index.html", "r", encoding="utf-8") as f: return f.read()
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OSINT TACTICAL COMMAND [BUILD 012.4]</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/deck.gl@8.9.33/dist.min.js"></script>
+    <link rel="stylesheet" href="static/styles.css?v=12.4">
+</head>
+<body class="bg-[#05080A] text-[#FF9900] overflow-hidden h-[100dvh] w-screen select-none font-mono relative">
+    <div class="crt-overlay pointer-events-none z-[999]"></div>
+
+    <div id="start-screen" class="fixed inset-0 bg-[#05080A] z-[1000] flex flex-col items-center justify-center cursor-pointer pointer-events-auto">
+        <div class="hud-panel p-8 text-center border-2 border-[#FF0033]">
+            <h1 class="text-3xl font-black text-[#FF0033] tracking-widest mb-2 animate-pulse">VANTAGE // COMMAND MODULE</h1>
+            <p class="text-xs text-[#FF9900] tracking-wider mb-6">BUILD 012.4 // MOBILE VIEWPORT ADAPTIVE</p>
+            <div class="border border-[#FF9900] py-3 px-6 text-sm bg-[#FF9900]/10 hover:bg-[#FF9900]/25 transition-all font-bold">
+                [ INITIALIZE TACTICAL LINK ]
+            </div>
+        </div>
+    </div>
+
+    <div class="fixed top-0 left-0 w-full h-16 bg-[#05080A]/95 border-b border-[#FF9900]/40 flex items-center px-4 gap-4 z-[500] backdrop-blur-md pointer-events-auto overflow-x-auto">
+        <button class="nav-tab active shrink-0" onclick="switchModule('grid')"><span>1. TACTICAL GRID</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('notebook')"><span>2. FIELD NOTES & AI</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('vault')"><span>3. SOURCE VAULT</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('editorial')"><span>4. WORKBENCH</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('handbook')" id="tab-handbook"><span>5. CODEX TERMINAL</span></button>
+    </div>
+
+    <div id="mod-grid" class="module-container active">
+        <div id="map-container" class="absolute inset-0 z-0"></div>
+        <div class="absolute right-4 top-20 w-72 hud-panel p-4 z-10 flex flex-col gap-2 pointer-events-auto bg-[#05080A]/80 backdrop-blur-md">
+            <div class="hud-header mb-2 font-bold text-[#FF0033] border-b border-[#FF0033]/30 pb-1">GRID TELEMETRY</div>
+            <div class="flex justify-between text-xs"><span>AIR VECTORS:</span><span id="stat-air" class="text-[#00FF66]">0</span></div>
+            <div class="flex justify-between text-xs"><span>ACTIVE PINGS:</span><span id="stat-emg" class="text-[#FF0033]">0</span></div>
+            <div id="log-console" class="mt-4 h-64 overflow-y-auto text-xs space-y-1 font-mono border-t border-[#FF9900]/40 pt-2 text-[#00FF66]"></div>
+        </div>
+        <div id="target-modal" class="hidden absolute left-8 bottom-8 z-30 w-96 p-4 hud-panel pointer-events-auto border-2 border-[#FF9900] bg-[#05080A]/95 backdrop-blur-md">
+            <div class="flex justify-between items-center border-b border-[#FF9900] mb-3 pb-1">
+                <span class="font-bold text-sm text-[#FF9900]" id="target-title">TARGET ACQUIRED</span>
+                <button onclick="closeTargetCard()" class="text-xs px-2 py-0.5 border border-[#FF9900] text-[#FF9900] hover:bg-[#FF9900] hover:text-black">X</button>
+            </div>
+            <div class="space-y-1.5 text-xs font-mono mb-4 text-[#FF9900]">
+                <div class="flex justify-between"><span>DESIGNATION:</span><span id="target-id" class="text-white">--</span></div>
+                <div class="flex justify-between"><span>CATEGORY:</span><span id="target-type" class="text-white">--</span></div>
+                <div class="flex justify-between"><span>THREAT:</span><span id="target-threat" class="font-bold">--</span></div>
+                <div class="flex justify-between"><span>COORDS:</span><span id="target-coords" class="text-[#00FF66]">--</span></div>
+                <div class="flex justify-between"><span>AGE:</span><span id="target-age">--</span></div>
+            </div>
+            <div class="flex gap-2">
+                <button id="lock-cam-btn" class="flex-1 py-1.5 border border-[#FF9900] bg-[#FF9900]/10 hover:bg-[#FF9900] hover:text-black text-xs font-bold tracking-widest text-[#FF9900]">🎯 LOCK</button>
+                <button id="directions-btn" class="flex-1 py-1.5 border border-[#00E5FF] bg-[#00E5FF]/10 hover:bg-[#00E5FF] hover:text-black text-xs font-bold text-[#00E5FF] tracking-widest">⚡ ROUTE</button>
+            </div>
+        </div>
+        <div id="navi-hud" class="hidden absolute left-8 top-20 z-30 w-96 p-4 hud-panel pointer-events-auto border-2 border-[#00E5FF] bg-[#05080A]/95 backdrop-blur-md">
+            <div class="flex justify-between items-center border-b border-[#00E5FF] mb-2 pb-1">
+                <span class="font-bold text-sm text-[#00E5FF] tracking-wider">NAVI-COMPUTER</span>
+                <button onclick="clearActiveRoute()" class="text-[10px] px-2 py-0.5 border border-[#FF0033] text-[#FF0033] hover:bg-[#FF0033] hover:text-black">DISENGAGE</button>
+            </div>
+            <div class="flex justify-between text-xs font-mono mb-3 bg-[#00E5FF]/10 p-2 border border-[#00E5FF]/30 text-[#00E5FF]">
+                <div>DIST: <span id="route-dist" class="text-white font-bold">--</span></div>
+                <div>ETA: <span id="route-eta" class="text-[#00FF66] font-bold">--</span></div>
+            </div>
+            <div id="route-steps" class="h-40 overflow-y-auto text-xs font-mono space-y-1.5 border border-[#00E5FF]/30 p-2 bg-black/40"></div>
+        </div>
+    </div>
+
+    <div id="mod-notebook" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
+        <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
+            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
+                <div class="flex justify-between items-center mb-4">
+                    <div class="hud-header font-bold text-[#FF9900] tracking-widest">FIELD NOTEBOOK</div>
+                    <button onclick="saveFieldNotes()" class="action-btn !bg-[#00FF66]/20 !border-[#00FF66] !text-[#00FF66]">💾 SAVE TO DISK</button>
+                </div>
+                <div id="save-status" class="text-xs mb-2 text-[#00E5FF]">ENCRYPTION: LOCAL | READY</div>
+                <textarea id="field-notes" class="flex-1 resize-none bg-black border border-[#FF9900]/40 p-4 text-white text-xs font-mono focus:outline-none" placeholder="> Enter field logs here..."></textarea>
+            </div>
+        </div>
+    </div>
+
+    <div id="mod-vault" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
+        <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
+            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
+                <div class="hud-header mb-4 font-bold text-[#FF9900] tracking-widest">ENCRYPTED SOURCE CRM</div>
+                <div class="grid grid-cols-2 gap-2 mb-2">
+                    <input type="text" id="vault-name" placeholder="Name" class="form-input">
+                    <select id="vault-status" class="form-input text-[#FF9900]"><option>On the Record</option><option>On Background</option></select>
+                    <input type="text" id="vault-phone" placeholder="Phone" class="form-input">
+                    <input type="email" id="vault-email" placeholder="Email" class="form-input">
+                </div>
+                <textarea id="vault-notes" class="h-20 resize-none mb-2 form-input" placeholder="> Background notes..."></textarea>
+                <button onclick="addToVault()" class="action-btn w-full mb-4 !border-[#FF9900] text-[#FF9900]">➕ ADD TO VAULT</button>
+                <div id="vault-directory" class="flex-1 overflow-y-auto space-y-2 mt-4 border-t border-[#FF9900]/40 pt-4"></div>
+            </div>
+            <div class="hud-panel w-1/3 flex flex-col p-4 border border-[#FF0033]/40 bg-[#05080A]/90">
+                <div class="hud-header mb-4 text-[#FF0033] font-bold tracking-widest border-b border-[#FF0033]/40 pb-1">EXIF SCRUBBER</div>
+                <input type="file" id="image-file" accept="image/jpeg" class="mb-4 text-xs border border-[#FF0033]/40 p-2 text-white">
+                <button onclick="scrubEXIF()" class="action-btn w-full !border-[#FF0033] !text-[#FF0033] hover:!bg-[#FF0033] hover:!text-black">PURGE METADATA</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mod-editorial" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
+        <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
+            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
+                <div class="hud-header mb-4 font-bold text-[#FF9900] tracking-widest">3-TIER SCANNER</div>
+                <textarea id="workbench-text" class="flex-1 resize-none mb-4 form-input" placeholder="> Paste draft copy here..."></textarea>
+                <button onclick="runAPStyleCheck()" class="action-btn w-full !bg-[#FF9900]/10 !border-[#FF9900] !text-[#FF9900]">SCAN DRAFT</button>
+                <div id="ap-results" class="h-48 overflow-y-auto mt-4 text-xs space-y-2 font-mono border border-[#FF9900]/40 p-3 bg-black/60"></div>
+            </div>
+            <div class="hud-panel w-1/3 flex flex-col p-4 border border-[#00E5FF]/40 bg-[#05080A]/90">
+                <div class="hud-header mb-3 font-bold text-[#00E5FF] tracking-widest border-b border-[#00E5FF]/40 pb-1">QUICK SEARCH</div>
+                <input type="text" id="stylebook-search" oninput="searchStylebook()" placeholder="🔍 Search rules..." class="mb-3 form-input">
+                <div id="stylebook-results" class="flex-1 overflow-y-auto text-xs space-y-3 font-mono border border-[#00E5FF]/40 p-3 bg-black/60"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODULE 5: Multi-Volume Codex Terminal -->
+    <div id="mod-handbook" class="module-container pt-20 px-2 pb-12 h-[100dvh] w-screen bg-[#05080A]">
+        <div class="w-full h-full flex flex-col pointer-events-auto z-10 border-2 border-[#00FF66]/60 bg-black shadow-[0_0_30px_rgba(0,255,102,0.15)]">
+            <div class="bg-[#00FF66]/10 border-b-2 border-[#00FF66]/60 px-3 py-1.5 flex justify-between items-center text-[11px] font-mono tracking-widest text-[#00FF66] shrink-0">
+                <span>// CODEX_v12.1 // SECURE_DB</span>
+                <span id="codex-status" class="animate-pulse">ONLINE</span>
+            </div>
+            
+            <div class="bg-black border-b border-[#00FF66]/40 px-2 py-1.5 flex gap-2 shrink-0 text-xs overflow-x-auto">
+                <span class="text-[#FF9900] font-bold self-center mr-1 text-[10px]">LIB:</span>
+                <button onclick="setLibraryVolume('ALL')" id="lib-btn-ALL" class="lib-tab active px-2.5 py-1 border border-[#00FF66] text-[#00FF66] bg-[#00FF66]/20 font-bold transition-all text-[11px]">ALL</button>
+                <button onclick="setLibraryVolume('AP STYLE')" id="lib-btn-AP" class="lib-tab px-2.5 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all text-[11px]">AP STYLE</button>
+                <button onclick="setLibraryVolume('STRUNK & WHITE')" id="lib-btn-STRUNK" class="lib-tab px-2.5 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all text-[11px]">STRUNK</button>
+            </div>
+
+            <div class="flex-1 grid grid-cols-12 overflow-hidden font-mono min-h-0">
+                <div class="col-span-4 md:col-span-3 border-r-2 border-[#00FF66]/60 flex flex-col bg-black min-h-0">
+                    <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 shrink-0">
+                        <input type="text" id="codex-search" oninput="filterCodexIndex()" placeholder="FILTER..." class="w-full bg-black border border-[#00FF66]/60 text-[#00FF66] px-1.5 py-1 text-[11px] focus:outline-none uppercase placeholder-[#00FF66]/30">
+                    </div>
+                    <div id="codex-folders" class="flex-1 overflow-y-auto min-h-0 space-y-0.5 p-1 bg-black text-[11px]"></div>
+                </div>
+                <div class="col-span-4 md:col-span-4 border-r-2 border-[#00FF66]/60 flex flex-col bg-black min-h-0">
+                    <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 flex justify-between items-center shrink-0">
+                        <span id="index-title" class="text-[11px] text-[#FF9900] font-bold truncate">INDEX</span>
+                        <span id="index-count" class="text-[9px] text-[#00FF66]/60">0</span>
+                    </div>
+                    <div id="codex-index-list" class="flex-1 overflow-y-auto min-h-0 p-1 space-y-1 bg-black text-[11px]"></div>
+                </div>
+                <div class="col-span-4 md:col-span-5 flex flex-col bg-black min-h-0">
+                    <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 flex justify-between items-center shrink-0">
+                        <span class="text-[11px] text-[#FF9900] font-bold truncate">BUFFER</span>
+                        <span id="reading-status" class="text-[9px] text-[#00FF66]/60">IDLE</span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto min-h-0 p-3 bg-black">
+                        <h2 id="reading-term" class="text-xs font-bold text-[#00FF66] uppercase tracking-wider mb-2 border-b border-[#00FF66]/30 pb-1">--</h2>
+                        <div id="reading-rule" class="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap font-mono pb-12">
+                            // SELECT ENTRY.
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="border-t-2 border-[#00FF66]/60 px-3 py-1 text-[9px] text-[#00FF66]/60 bg-black flex justify-between shrink-0 mb-6 md:mb-0">
+                <span>LINK: ACTIVE</span>
+                <span>ENC: AES-256</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/main.js?v=12.4"></script>
+</body>
+</html>
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playBeep(freq, type = 'square', duration = 0.1) {
+    if(audioCtx.state === 'suspended') return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type; osc.frequency.value = freq;
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    gain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+}
+
+let deckgl = null;
+document.addEventListener('DOMContentLoaded', () => {
+    const startScreen = document.getElementById('start-screen');
+    if (startScreen) {
+        startScreen.addEventListener('click', () => {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            playBeep(880, 'square', 0.15);
+            setTimeout(() => playBeep(1200, 'square', 0.2), 150);
+            startScreen.style.display = 'none';
+            initMapAndDeck();
+            connectWebSocket();
+            loadFullHandbook();
+        });
+    }
+});
+
+function switchModule(modId) {
+    playBeep(1200, 'sine', 0.1);
+    document.querySelectorAll('.module-container').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('mod-' + modId).classList.add('active');
+    event.currentTarget.classList.add('active');
+    if(modId === 'vault') loadVault(); 
+    if(modId === 'editorial') searchStylebook();
+    if(modId === 'handbook') loadFullHandbook();
+}
+
+let userCoords = null;
+if ("geolocation" in navigator) {
+    navigator.geolocation.watchPosition((position) => { userCoords = [position.coords.longitude, position.coords.latitude]; }, (err) => console.log(err), { enableHighAccuracy: true });
+}
+
+let currentViewState = { longitude: -118.2426, latitude: 34.0549, zoom: 9, pitch: 45, bearing: 0 };
+let persistentEmergencies = [];
+let latestAirTraffic = [];
+let latestSurveillance = []; // ALPR state array
+let activeRoutePath = null;
+let t = 0;
+
+function initMapAndDeck() {
+    deckgl = new deck.DeckGL({
+        container: 'map-container',
+        mapboxGl: maplibregl,
+        mapStyle: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+        initialViewState: currentViewState, controller: true,
+        onViewStateChange: ({viewState}) => { currentViewState = viewState; }, layers: []
+    });
+    requestAnimationFrame(renderLayers);
+}
+
+function connectWebSocket() {
+    // Dynamic wss:// protocol fix for Render / Safari mixed content
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+    
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const now = Date.now();
+        if (data.emergencies && data.emergencies.length > 0) {
+            data.emergencies.forEach(e => persistentEmergencies.push({...e, id: 'CAD-' + Math.floor(100000 + Math.random() * 900000), timestamp: now}));
+            playBeep(1800, 'sawtooth', 0.1);
+            const log = document.getElementById('log-console');
+            if (log) log.innerHTML = `<div class="text-[#FF0033] truncate">[${new Date().toLocaleTimeString()}] PING: ${data.emergencies[0].type}</div>` + log.innerHTML;
+        }
+        latestAirTraffic = data.air_traffic || [];
+        latestSurveillance = data.surveillance_nodes || []; 
+        const airStat = document.getElementById('stat-air');
+        if (airStat) airStat.innerText = latestAirTraffic.length;
+    };
+
+    ws.onclose = () => { setTimeout(connectWebSocket, 3000); };
+}
+
+async function calculateInAppRoute(startLon, startLat, endLon, endLat) {
+    document.getElementById('navi-hud').classList.remove('hidden');
+    document.getElementById('route-steps').innerHTML = '<div class="text-[#00E5FF] animate-pulse">> CALCULATING VECTOR PATHWAY...</div>';
+    try {
+        const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson&steps=true`);
+        const data = await res.json();
+        const route = data.routes[0];
+        activeRoutePath = route.geometry.coordinates;
+        document.getElementById('route-dist').innerText = `${(route.distance / 1609.34).toFixed(1)} MI`;
+        document.getElementById('route-eta').innerText = `${Math.ceil(route.duration / 60)} MINS`;
+        document.getElementById('route-steps').innerHTML = route.legs[0].steps.map((step, idx) => `
+            <div class="border-b border-[#00E5FF]/20 pb-1">
+                <span class="text-[#00FF66] font-bold">[STEP ${idx + 1}]</span> ${step.maneuver.type.toUpperCase()} ${step.name ? `ONTO ${step.name.toUpperCase()}` : ''}
+                <div class="text-[10px] text-gray-400">TRANSIT: ${Math.round(step.distance)} METERS</div>
+            </div>`).join('');
+        playBeep(2200, 'sine', 0.2);
+    } catch (err) { document.getElementById('route-steps').innerHTML = '<div class="text-[#FF0033]">❌ ROUTE FAILED.</div>'; }
+}
+
+function clearActiveRoute() { playBeep(800, 'square', 0.1); activeRoutePath = null; document.getElementById('navi-hud').classList.add('hidden'); }
+
+let selectedTargetCoords = null;
+function showTargetCard(obj, isAir = false, isSurveillance = false) {
+    playBeep(1400, 'sine', 0.08);
+    const modal = document.getElementById('target-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('target-id').innerText = obj.id || obj.callsign || 'ALPR-NODE';
+    document.getElementById('target-coords').innerText = `${obj.coords[1].toFixed(4)}°, ${obj.coords[0].toFixed(4)}°`;
+    selectedTargetCoords = obj.coords;
+
+    if (isAir) {
+        modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
+        document.getElementById('target-title').innerText = "AIRCRAFT VECTOR"; document.getElementById('target-title').className = "font-bold text-[#00FF66]";
+        document.getElementById('target-type').innerText = "CIVILIAN AIR"; document.getElementById('target-threat').innerText = "NOMINAL"; document.getElementById('target-threat').className = "text-[#00FF66] font-bold";
+        document.getElementById('target-age').innerText = "LIVE STREAM";
+    } else if (isSurveillance) {
+        modal.classList.remove('border-[#FF0033]');
+        modal.classList.add('border-[#ff00ff]'); 
+        document.getElementById('target-title').innerText = "SURVEILLANCE NODE"; document.getElementById('target-title').className = "font-bold text-[#ff00ff]";
+        document.getElementById('target-type').innerText = obj.type || "ALPR"; document.getElementById('target-threat').innerText = obj.operator || "UNKNOWN"; document.getElementById('target-threat').className = "text-[#ff00ff] font-bold";
+        document.getElementById('target-age').innerText = "FLOCK-BACK / WARDRIVE FEED";
+    } else {
+        if (obj.threat === 'RED') { modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]'); } 
+        else { modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]'); }
+        document.getElementById('target-title').innerText = "INCIDENT"; document.getElementById('target-title').className = "font-bold text-[#FF9900]";
+        document.getElementById('target-type').innerText = obj.type; document.getElementById('target-threat').innerText = obj.threat === 'RED' ? 'PRIORITY 1' : 'PRIORITY 2';
+        document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
+        document.getElementById('target-age').innerText = `${Math.floor((Date.now() - obj.timestamp) / 1000)} SEC AGO`;
+    }
+
+    document.getElementById('lock-cam-btn').onclick = () => { deckgl.setProps({ initialViewState: { ...currentViewState, longitude: selectedTargetCoords[0], latitude: selectedTargetCoords[1], zoom: 14, transitionDuration: 1000 }}); };
+    document.getElementById('directions-btn').onclick = () => { calculateInAppRoute(userCoords ? userCoords[0] : -118.2426, userCoords ? userCoords[1] : 34.0549, selectedTargetCoords[0], selectedTargetCoords[1]); };
+}
+function closeTargetCard() { document.getElementById('target-modal').classList.add('hidden'); }
+
+function renderLayers() {
+    t = (t + 1) % 100;
+    const now = Date.now();
+    persistentEmergencies = persistentEmergencies.filter(e => (now - e.timestamp) < 40000);
+    const emgStat = document.getElementById('stat-emg');
+    if (emgStat) emgStat.innerText = persistentEmergencies.length;
+
+    if (!deckgl) { requestAnimationFrame(renderLayers); return; }
+
+    const layers = [];
+    if (userCoords) layers.push(new deck.ScatterplotLayer({ id: 'user', data: [{ coords: userCoords }], getPosition: d => d.coords, getFillColor: [0, 229, 255, 200], getRadius: (t * 2) + 10, radiusMinPixels: 6, radiusMaxPixels: 20, stroked: true, getLineColor: [255, 255, 255] }));
+    if (activeRoutePath) layers.push(new deck.PathLayer({ id: 'route', data: [{ path: activeRoutePath }], getPath: d => d.path, getColor: [0, 229, 255, 220], getWidth: 8, widthMinPixels: 4 }));
+    
+    layers.push(new deck.ScatterplotLayer({
+        id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220 })),
+        getPosition: d => d.coords, getFillColor: d => d.threat === 'RED' ? [255, 0, 51, d.alpha] : [255, 153, 0, d.alpha],
+        getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, false); }
+    }));
+    
+    layers.push(new deck.ColumnLayer({
+        id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, true, false); }
+    }));
+
+    if (latestSurveillance && latestSurveillance.length > 0) {
+        layers.push(new deck.ScatterplotLayer({
+            id: 'surveillance',
+            data: latestSurveillance,
+            getPosition: d => d.coords,
+            getFillColor: [255, 0, 255, 200],
+            getRadius: 60,
+            radiusMinPixels: 6,
+            radiusMaxPixels: 18,
+            stroked: true,
+            getLineColor: [255, 255, 255, 255],
+            pickable: true,
+            onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
+        }));
+    }
+
+    deckgl.setProps({ layers });
+    requestAnimationFrame(renderLayers);
+}
+
+async function saveFieldNotes() {
+    const content = document.getElementById('field-notes').value;
+    if(!content) return;
+    document.getElementById('save-status').innerText = "SAVING...";
+    await fetch('/api/save-note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+    playBeep(2000, 'sine', 0.2);
+    document.getElementById('save-status').innerText = "ENCRYPTION: LOCAL | SAVED";
+}
+
+async function loadVault() {
+    const res = await fetch('/api/vault');
+    const data = await res.json();
+    document.getElementById('vault-directory').innerHTML = data.reverse().map(c => `
+        <div class="border border-[#FF9900]/50 p-3 bg-black/60 mb-2">
+            <div class="flex justify-between font-bold text-[#00E5FF] border-b border-[#00E5FF]/30 pb-1 mb-1">
+                <span>${c.name}</span><span class="text-[10px] text-[#FF9900] uppercase bg-[#FF9900]/10 px-2 py-0.5">${c.status}</span>
+            </div>
+            <div class="text-xs text-white/80 font-mono">P: ${c.phone} | E: ${c.email}</div>
+            <div class="text-xs text-[#00FF66] mt-2 font-mono">> ${c.notes}</div>
+        </div>`).join('');
+}
+
+async function addToVault() {
+    const payload = { name: document.getElementById('vault-name').value, status: document.getElementById('vault-status').value, phone: document.getElementById('vault-phone').value, email: document.getElementById('vault-email').value, notes: document.getElementById('vault-notes').value };
+    if(!payload.name) return;
+    await fetch('/api/vault', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    playBeep(1600, 'sine', 0.15);
+    loadVault();
+}
+
+async function scrubEXIF() {
+    const file = document.getElementById('image-file').files[0];
+    if(!file) return;
+    const formData = new FormData(); formData.append("file", file);
+    const res = await fetch('/api/scrub-exif', { method: 'POST', body: formData });
+    if(res.ok) {
+        const a = document.createElement('a'); a.href = window.URL.createObjectURL(await res.blob()); a.download = 'CLEANED_' + file.name;
+        document.body.appendChild(a); a.click(); a.remove(); playBeep(1500, 'square', 0.3);
+    }
+}
+
+async function runAPStyleCheck() {
+    const text = document.getElementById('workbench-text').value;
+    if(!text) return;
+    playBeep(600, 'sawtooth', 0.2);
+    document.getElementById('ap-results').innerHTML = '<div class="text-[#FF9900] animate-pulse">> Scanning copy...</div>';
+    const res = await fetch('/api/check-style', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    const data = await res.json();
+    playBeep(2400, 'sine', 0.2);
+    if (data.flags.length === 0) { document.getElementById('ap-results').innerHTML = '<div class="text-[#00FF66] font-bold">> COPY IS CLEAN.</div>'; return; }
+    document.getElementById('ap-results').innerHTML = data.flags.map(f => `
+        <div class="border-l-2 border-[#FF9900] pl-2 mb-3 py-1 bg-black/40">
+            <div class="text-[10px] text-[#00E5FF] font-bold">${f.type}</div>
+            <div class="text-[#FF0033] font-bold">MATCH: "${f.error}"</div>
+            <div class="text-[#00FF66] text-[11px] mt-1">> ${f.suggestion}</div>
+        </div>`).join('');
+}
+
+async function searchStylebook() {
+    const q = document.getElementById('stylebook-search').value;
+    const res = await fetch(`/api/stylebook/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    const container = document.getElementById('stylebook-results');
+    if (!data.results || data.results.length === 0) { container.innerHTML = '<div class="text-gray-500">> No match found.</div>'; return; }
+    container.innerHTML = data.results.map(r => `
+        <div class="border-b border-[#00E5FF]/30 pb-2 mb-2 bg-black/40 p-2">
+            <div class="text-[#00E5FF] font-bold uppercase tracking-wider">${r.term}</div>
+            <div class="text-gray-300 text-[11px] mt-1">${r.rule}</div>
+        </div>`).join('');
+}
+
+let fullCodexDatabase = [];
+let activeFolder = null;
+let currentVolume = 'ALL';
+
+async function loadFullHandbook() {
+    if (fullCodexDatabase.length === 0) {
+        document.getElementById('codex-folders').innerHTML = '<div class="text-xs text-[#00FF66] animate-pulse p-2">> FETCHING LIBRARY...</div>';
+        try {
+            const res = await fetch('/api/stylebook/all');
+            const data = await res.json();
+            fullCodexDatabase = data.database;
+            buildCodexFolders();
+            selectFolder('📚 GUIDES & CHAPTERS');
+            playBeep(2000, 'sine', 0.2);
+        } catch (e) {
+            document.getElementById('codex-folders').innerHTML = '<div class="text-xs text-[#FF0033] p-2">❌ LIBRARY ERROR</div>';
+        }
+    }
+}
+
+function setLibraryVolume(vol) {
+    playBeep(1200, 'sine', 0.1);
+    currentVolume = vol;
+    
+    ['ALL', 'AP', 'STRUNK'].forEach(v => {
+        const btn = document.getElementById(`lib-btn-${v}`);
+        if(btn) { btn.className = "lib-tab px-3 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all"; }
+    });
+    const activeBtn = document.getElementById(`lib-btn-${vol === 'ALL' ? 'ALL' : (vol === 'AP STYLE' ? 'AP' : 'STRUNK')}`);
+    if(activeBtn) { activeBtn.className = "lib-tab active px-3 py-1 border border-[#00FF66] text-[#00FF66] bg-[#00FF66]/20 font-bold transition-all"; }
+    buildCodexFolders();
+    selectFolder('📚 GUIDES & CHAPTERS');
+}
+
+function buildCodexFolders(filterQuery = '') {
+    const foldersContainer = document.getElementById('codex-folders');
+    const query = filterQuery.toUpperCase();
+
+    let filteredDb = fullCodexDatabase;
+    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
+
+    const chapterItems = filteredDb.filter(item => item.term.includes('CHAPTER:') || item.term.includes('★'));
+    const standardItems = filteredDb.filter(item => !item.term.includes('CHAPTER:') && !item.term.includes('★'));
+
+    let alphabetGroups = {};
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(letter => {
+        alphabetGroups[letter] = standardItems.filter(item => {
+            let cleanTerm = item.term.replace(/^\[.*?\]\s*/, '').toUpperCase();
+            return cleanTerm.startsWith(letter);
+        });
+    });
+
+    let html = '';
+    if (chapterItems.length > 0) {
+        html += `<div onclick="selectFolder('📚 GUIDES & CHAPTERS')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === '📚 GUIDES & CHAPTERS' ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>📚 GUIDES & CHAPTERS</span><span class="text-[10px] opacity-70">(${chapterItems.length})</span></div>`;
+    }
+
+    Object.keys(alphabetGroups).forEach(letter => {
+        const count = alphabetGroups[letter].length;
+        if (count > 0 && (!query || letter.includes(query))) {
+            html += `<div onclick="selectFolder('${letter}')" class="cursor-pointer px-3 py-2 text-xs font-mono uppercase transition-all flex justify-between items-center ${activeFolder === letter ? 'bg-[#00FF66] text-black font-bold' : 'text-[#00FF66] hover:bg-[#00FF66]/20'}"><span>[FOLDER] ${letter}</span><span class="text-[10px] opacity-70">(${count})</span></div>`;
+        }
+    });
+
+    foldersContainer.innerHTML = html || '<div class="text-xs text-[#FF9900] p-2">NO FOLDERS FOUND</div>';
+}
+
+function selectFolder(folderKey) {
+    playBeep(1400, 'square', 0.05);
+    activeFolder = folderKey;
+    buildCodexFolders(document.getElementById('codex-search').value);
+
+    let filteredDb = fullCodexDatabase;
+    if (currentVolume !== 'ALL') { filteredDb = fullCodexDatabase.filter(item => item.library === currentVolume); }
+
+    const indexList = document.getElementById('codex-index-list');
+    const indexTitle = document.getElementById('index-title');
+    const indexCount = document.getElementById('index-count');
+
+    let entries = [];
+    if (folderKey === '📚 GUIDES & CHAPTERS') {
+        entries = filteredDb.filter(item => item.term.includes('CHAPTER:') || item.term.includes('★'));
+    } else {
+        entries = filteredDb.filter(item => {
+            let cleanTerm = item.term.replace(/^\[.*?\]\s*/, '').toUpperCase();
+            return cleanTerm.startsWith(folderKey) && !item.term.includes('CHAPTER:') && !item.term.includes('★');
+        });
+    }
+
+    indexTitle.innerText = `FOLDER: [ ${folderKey} ]`;
+    indexCount.innerText = `${entries.length} ENTRIES`;
+
+    indexList.innerHTML = entries.map((entry) => `
+        <div onclick='loadIntoReadingPane(${JSON.stringify(entry.term)})' class="cursor-pointer px-2 py-1.5 text-xs font-mono text-[#00FF66] hover:bg-[#00FF66] hover:text-black transition-colors truncate border-b border-[#00FF66]/10">
+            > ${entry.term}
+        </div>
+    `).join('') || '<div class="text-xs text-[#FF9900] p-2">EMPTY</div>';
+}
+
+function formatCodexRuleText(ruleText) {
+    if (!ruleText) return '';
+    let safeText = ruleText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    safeText = safeText.replace(/(See\s+also\s+|See\s+)([a-zA-Z0-9\-\s]+)(\.)/gi, (match, prefix, term, ending) => {
+        let cleanTerm = term.trim();
+        return `${prefix}<span onclick="jumpToCodexTerm('${cleanTerm}')" class="text-[#00E5FF] underline cursor-pointer hover:bg-[#00E5FF]/20 font-bold">${cleanTerm}</span>${ending}`;
+    });
+    return safeText;
+}
+
+function loadIntoReadingPane(termKey) {
+    playBeep(1800, 'sine', 0.08);
+    const entry = fullCodexDatabase.find(i => i.term === termKey);
+    if (!entry) return;
+
+    document.getElementById('reading-term').innerText = entry.term;
+    document.getElementById('reading-rule').innerHTML = formatCodexRuleText(entry.rule);
+    document.getElementById('reading-status').innerText = "BUFFER: LOADED";
+}
+
+window.jumpToCodexTerm = function(targetTerm) {
+    playBeep(2200, 'sine', 0.1);
+    const found = fullCodexDatabase.find(i => i.term.toLowerCase().includes(targetTerm.toLowerCase()));
+    if (found) {
+        let firstLetter = found.term.replace(/^\[.*?\]\s*/, '').charAt(0).toUpperCase();
+        if (found.term.includes('CHAPTER:') || found.term.includes('★')) {
+            selectFolder('📚 GUIDES & CHAPTERS');
+        } else if ('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(firstLetter)) {
+            selectFolder(firstLetter);
+        }
+        loadIntoReadingPane(found.term);
+    } else { playBeep(400, 'sawtooth', 0.2); }
+}
+
+function filterCodexIndex() { buildCodexFolders(document.getElementById('codex-search').value); }

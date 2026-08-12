@@ -1,4 +1,4 @@
-# BUILD: 012.4 (RINGMAST4R FLOCK INTEGRATION & OSM FUSION)
+# BUILD: 013.0 (ZERO-TRUST ARCHITECTURE & AI OVERSEER)
 import asyncio
 import json
 import random
@@ -13,16 +13,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, R
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="OSINT TACTICAL COMMAND", version="012.4")
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="013.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-os.makedirs("local_storage/notes", exist_ok=True)
-os.makedirs("local_storage/vault", exist_ok=True)
-VAULT_FILE = "local_storage/vault/source_vault.json"
 AP_DB_FILE = "ap_style_database.json"
-
-if not os.path.exists(VAULT_FILE):
-    with open(VAULT_FILE, "w", encoding="utf-8") as f: json.dump([], f)
 
 ap_style_db = []
 if os.path.exists(AP_DB_FILE):
@@ -30,7 +24,6 @@ if os.path.exists(AP_DB_FILE):
         ap_style_db = json.load(f)
 
 live_cad_dispatches = []
-# Expanded Greater LA Bounding Box for maximum capture
 LA_BBOX = {"lamin": 33.5, "lamax": 34.5, "lomin": -118.8, "lomax": -117.5}
 CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
 
@@ -42,14 +35,11 @@ async def fetch_alpr_data(client):
     
     if time.time() - alpr_last_fetched > 3600:
         nodes = []
-        
-        # 1. FETCH FROM RINGMAST4R/FLOCK GITHUB REPOSITORY
         try:
             flock_url = "https://raw.githubusercontent.com/Ringmast4r/FLOCK/main/camera_networks.json"
             res_flock = await client.get(flock_url, timeout=15.0)
             if res_flock.status_code == 200:
                 data = res_flock.json()
-                # Parse through the network JSON (handles GeoJSON or lists)
                 if "features" in data:
                     for f in data["features"]:
                         coords = f.get("geometry", {}).get("coordinates", [0,0])
@@ -64,7 +54,6 @@ async def fetch_alpr_data(client):
         except Exception as e:
             print(f"Ringmast4r fetch failed: {e}")
 
-        # 2. FETCH FROM OSM / DEFLOCK VIA OVERPASS
         try:
             overpass_url = "https://overpass-api.de/api/interpreter"
             query = f"""
@@ -84,10 +73,9 @@ async def fetch_alpr_data(client):
         except Exception as e:
             print(f"Overpass fetch failed: {e}")
 
-        # 3. HIGH-DENSITY LOCAL SIMULATION FALLBACK (If APIs rate limit)
         if not nodes:
             operators = ["Flock Safety", "Motorola/Vigilant", "Genetec", "LAPD"]
-            for _ in range(400):  # Generate a massive grid if APIs drop
+            for _ in range(400):  
                 nodes.append({
                     "coords": [-118.24 + random.uniform(-0.5, 0.5), 34.05 + random.uniform(-0.4, 0.4)],
                     "type": "ALPR NODE (FALLBACK)",
@@ -100,7 +88,7 @@ async def fetch_alpr_data(client):
     return cached_alpr_nodes
 
 async def fetch_osint_data():
-    payload = {"build": "012.4", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
+    payload = {"build": "013.0", "air_traffic": [], "seismic": [], "emergencies": [], "surveillance_nodes": []}
     global live_cad_dispatches
     payload["emergencies"].extend(live_cad_dispatches)
     live_cad_dispatches = [] 
@@ -149,25 +137,22 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(3.5)
     except WebSocketDisconnect: pass
 
-@app.post("/api/save-note")
-async def save_note(request: Request):
-    data = await request.json()
-    filename = f"local_storage/notes/Field_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-    with open(filename, "w", encoding="utf-8") as f: f.write(data.get("content", ""))
-    return {"status": "success", "file": filename}
 
-@app.get("/api/vault")
-async def get_vault():
-    with open(VAULT_FILE, "r", encoding="utf-8") as f: return json.load(f)
+# [ TAB 6 AI OVERSEER ROUTING ]
+@app.post("/api/agent/reach")
+async def agent_reach(request: Request):
+    payload = await request.json()
+    # Placeholder for LLM processing logic (60s timeout routing handled here)
+    return {"agent": "AGENT-REACH", "response": f">> DIRECTIVE ACKNOWLEDGED: {payload.get('prompt')} \n>> STANDING BY FOR ADDITIONAL PARAMETERS."}
 
-@app.post("/api/vault")
-async def add_to_vault(request: Request):
-    data = await request.json()
-    with open(VAULT_FILE, "r", encoding="utf-8") as f: vault = json.load(f)
-    vault.append(data)
-    with open(VAULT_FILE, "w", encoding="utf-8") as f: json.dump(vault, f)
-    return {"status": "success"}
+@app.post("/api/odysseus")
+async def odysseus_endpoint(request: Request):
+    payload = await request.json()
+    # Placeholder for local Odysseus model execution
+    return {"agent": "ODYSSEUS", "response": f">> ANALYSIS COMPLETE FOR: {payload.get('prompt')} \n>> DATA ASSIMILATED INTO NETWORK."}
 
+
+# [ UTILITIES ]
 @app.post("/api/scrub-exif")
 async def scrub_exif(file: UploadFile = File(...)):
     img_bytes = await file.read()

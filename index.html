@@ -2,43 +2,62 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OSINT TACTICAL COMMAND [BUILD 012.4]</title>
+    <title>OSINT TACTICAL COMMAND [BUILD 013.0]</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/deck.gl@8.9.33/dist.min.js"></script>
-    <link rel="stylesheet" href="static/styles.css?v=12.4">
+    <link rel="stylesheet" href="static/styles.css?v=13.0">
 </head>
 <body class="bg-[#05080A] text-[#FF9900] overflow-hidden h-[100dvh] w-screen select-none font-mono relative">
     <div class="crt-overlay pointer-events-none z-[999]"></div>
 
+    <!-- INITIALIZATION SCREEN -->
     <div id="start-screen" class="fixed inset-0 bg-[#05080A] z-[1000] flex flex-col items-center justify-center cursor-pointer pointer-events-auto">
-        <div class="hud-panel p-8 text-center border-2 border-[#FF0033]">
-            <h1 class="text-3xl font-black text-[#FF0033] tracking-widest mb-2 animate-pulse">VANTAGE // COMMAND MODULE</h1>
-            <p class="text-xs text-[#FF9900] tracking-wider mb-6">BUILD 012.4 // MOBILE VIEWPORT ADAPTIVE</p>
-            <div class="border border-[#FF9900] py-3 px-6 text-sm bg-[#FF9900]/10 hover:bg-[#FF9900]/25 transition-all font-bold">
+        <div class="hud-panel p-8 text-center border-2 border-[#00E5FF] shadow-[0_0_20px_rgba(0,229,255,0.2)]">
+            <h1 class="text-3xl font-black text-[#00E5FF] tracking-widest mb-2 animate-pulse">VANTAGE // COMMAND MODULE</h1>
+            <p class="text-xs text-[#00FF66] tracking-wider mb-6">BUILD 013.0 // NEURAL LINK READY</p>
+            <div class="border border-[#00E5FF] py-3 px-6 text-sm bg-[#00E5FF]/10 hover:bg-[#00E5FF]/25 transition-all font-bold">
                 [ INITIALIZE TACTICAL LINK ]
             </div>
         </div>
     </div>
 
+    <!-- TOP NAV -->
     <div class="fixed top-0 left-0 w-full h-16 bg-[#05080A]/95 border-b border-[#FF9900]/40 flex items-center px-4 gap-4 z-[500] backdrop-blur-md pointer-events-auto overflow-x-auto">
-        <button class="nav-tab active shrink-0" onclick="switchModule('grid')"><span>1. TACTICAL GRID</span></button>
-        <button class="nav-tab shrink-0" onclick="switchModule('notebook')"><span>2. FIELD NOTES & AI</span></button>
-        <button class="nav-tab shrink-0" onclick="switchModule('vault')"><span>3. SOURCE VAULT</span></button>
-        <button class="nav-tab shrink-0" onclick="switchModule('editorial')"><span>4. WORKBENCH</span></button>
-        <button class="nav-tab shrink-0" onclick="switchModule('handbook')" id="tab-handbook"><span>5. CODEX TERMINAL</span></button>
+        <button class="nav-tab active shrink-0" onclick="switchModule('grid')"><span>1. MAP</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('notebook')"><span>2. NOTEBOOK</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('vault')"><span>3. CONTACTS</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('editorial')"><span>4. AP EDITOR</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('handbook')" id="tab-handbook"><span>5. CODEX</span></button>
+        <button class="nav-tab shrink-0" onclick="switchModule('overseer')"><span>6. AI OVERSEER</span></button>
     </div>
 
+    <!-- MODULE 1: MAP -->
     <div id="mod-grid" class="module-container active">
         <div id="map-container" class="absolute inset-0 z-0"></div>
-        <div class="absolute right-4 top-20 w-72 hud-panel p-4 z-10 flex flex-col gap-2 pointer-events-auto bg-[#05080A]/80 backdrop-blur-md">
-            <div class="hud-header mb-2 font-bold text-[#FF0033] border-b border-[#FF0033]/30 pb-1">GRID TELEMETRY</div>
-            <div class="flex justify-between text-xs"><span>AIR VECTORS:</span><span id="stat-air" class="text-[#00FF66]">0</span></div>
-            <div class="flex justify-between text-xs"><span>ACTIVE PINGS:</span><span id="stat-emg" class="text-[#FF0033]">0</span></div>
-            <div id="log-console" class="mt-4 h-64 overflow-y-auto text-xs space-y-1 font-mono border-t border-[#FF9900]/40 pt-2 text-[#00FF66]"></div>
+        <div class="absolute right-4 top-20 w-72 hud-panel p-0 z-10 flex flex-col pointer-events-auto bg-[#05080A]/60 backdrop-blur-md border border-[#FF0033] shadow-[0_0_15px_rgba(255,0,51,0.2)] transition-all" id="telemetry-box">
+            <div class="flex justify-between items-center p-3 border-b border-[#FF0033]/40 bg-[#FF0033]/10">
+                <span class="font-bold text-xs text-[#FF0033] tracking-widest">GRID TELEMETRY</span>
+                <button onclick="toggleTelemetry()" id="tel-toggle-btn" class="text-xs text-[#FF0033] hover:text-white">[ - ]</button>
+            </div>
+            <div id="telemetry-content" class="p-4 flex flex-col gap-2">
+                <div class="flex justify-between text-xs"><span>AIR VECTORS:</span><span id="stat-air" class="text-[#00FF66]">0</span></div>
+                <div class="flex justify-between text-xs"><span>ACTIVE PINGS:</span><span id="stat-emg" class="text-[#FF0033]">0</span></div>
+                <div id="log-console" class="mt-2 h-48 overflow-y-auto text-xs space-y-1 font-mono border-t border-[#FF9900]/40 pt-2 text-[#FF9900]"></div>
+            </div>
+            <!-- Collapsed summary line (hidden by default) -->
+            <div id="telemetry-collapsed" class="hidden p-2 text-[10px] text-center font-bold text-[#FF0033]">
+                AIR: <span id="stat-air-mini" class="text-[#00FF66]">0</span> | PINGS: <span id="stat-emg-mini">0</span>
+            </div>
         </div>
-        <div id="target-modal" class="hidden absolute left-8 bottom-8 z-30 w-96 p-4 hud-panel pointer-events-auto border-2 border-[#FF9900] bg-[#05080A]/95 backdrop-blur-md">
+
+        <!-- Target Lock UI -->
+        <div id="target-modal" class="hidden absolute left-8 bottom-8 z-30 w-96 p-4 hud-panel pointer-events-auto border-2 border-[#FF9900] bg-[#05080A]/95 backdrop-blur-md relative">
+            <div class="absolute top-0 left-0 text-[#FF9900] -mt-2 -ml-2 leading-none">+</div>
+            <div class="absolute top-0 right-0 text-[#FF9900] -mt-2 -mr-2 leading-none">+</div>
+            <div class="absolute bottom-0 left-0 text-[#FF9900] -mb-2 -ml-2 leading-none">+</div>
+            <div class="absolute bottom-0 right-0 text-[#FF9900] -mb-2 -mr-2 leading-none">+</div>
             <div class="flex justify-between items-center border-b border-[#FF9900] mb-3 pb-1">
                 <span class="font-bold text-sm text-[#FF9900]" id="target-title">TARGET ACQUIRED</span>
                 <button onclick="closeTargetCard()" class="text-xs px-2 py-0.5 border border-[#FF9900] text-[#FF9900] hover:bg-[#FF9900] hover:text-black">X</button>
@@ -48,126 +67,179 @@
                 <div class="flex justify-between"><span>CATEGORY:</span><span id="target-type" class="text-white">--</span></div>
                 <div class="flex justify-between"><span>THREAT:</span><span id="target-threat" class="font-bold">--</span></div>
                 <div class="flex justify-between"><span>COORDS:</span><span id="target-coords" class="text-[#00FF66]">--</span></div>
-                <div class="flex justify-between"><span>AGE:</span><span id="target-age">--</span></div>
             </div>
             <div class="flex gap-2">
                 <button id="lock-cam-btn" class="flex-1 py-1.5 border border-[#FF9900] bg-[#FF9900]/10 hover:bg-[#FF9900] hover:text-black text-xs font-bold tracking-widest text-[#FF9900]">🎯 LOCK</button>
                 <button id="directions-btn" class="flex-1 py-1.5 border border-[#00E5FF] bg-[#00E5FF]/10 hover:bg-[#00E5FF] hover:text-black text-xs font-bold text-[#00E5FF] tracking-widest">⚡ ROUTE</button>
             </div>
         </div>
-        <div id="navi-hud" class="hidden absolute left-8 top-20 z-30 w-96 p-4 hud-panel pointer-events-auto border-2 border-[#00E5FF] bg-[#05080A]/95 backdrop-blur-md">
-            <div class="flex justify-between items-center border-b border-[#00E5FF] mb-2 pb-1">
-                <span class="font-bold text-sm text-[#00E5FF] tracking-wider">NAVI-COMPUTER</span>
-                <button onclick="clearActiveRoute()" class="text-[10px] px-2 py-0.5 border border-[#FF0033] text-[#FF0033] hover:bg-[#FF0033] hover:text-black">DISENGAGE</button>
-            </div>
-            <div class="flex justify-between text-xs font-mono mb-3 bg-[#00E5FF]/10 p-2 border border-[#00E5FF]/30 text-[#00E5FF]">
-                <div>DIST: <span id="route-dist" class="text-white font-bold">--</span></div>
-                <div>ETA: <span id="route-eta" class="text-[#00FF66] font-bold">--</span></div>
-            </div>
-            <div id="route-steps" class="h-40 overflow-y-auto text-xs font-mono space-y-1.5 border border-[#00E5FF]/30 p-2 bg-black/40"></div>
-        </div>
     </div>
 
+    <!-- MODULE 2: NOTEBOOK -->
     <div id="mod-notebook" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
-        <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
-            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
-                <div class="flex justify-between items-center mb-4">
-                    <div class="hud-header font-bold text-[#FF9900] tracking-widest">FIELD NOTEBOOK</div>
-                    <button onclick="saveFieldNotes()" class="action-btn !bg-[#00FF66]/20 !border-[#00FF66] !text-[#00FF66]">💾 SAVE TO DISK</button>
-                </div>
-                <div id="save-status" class="text-xs mb-2 text-[#00E5FF]">ENCRYPTION: LOCAL | READY</div>
-                <textarea id="field-notes" class="flex-1 resize-none bg-black border border-[#FF9900]/40 p-4 text-white text-xs font-mono focus:outline-none" placeholder="> Enter field logs here..."></textarea>
+        <div class="w-full flex flex-col gap-2 h-full pointer-events-auto z-10 border border-[#00FF66]/40 p-4 bg-[#05080A]/90 relative">
+            <div class="flex justify-between items-center mb-2">
+                <div class="font-bold text-[#00FF66] tracking-widest">[ FIELD NOTEBOOK TERMINAL ]</div>
+                <div id="save-status" class="text-xs text-[#00E5FF]">ENCRYPTION: AES-GCM | STANDBY</div>
+            </div>
+            <textarea id="field-notes" class="flex-1 resize-none bg-black border border-[#00FF66]/40 p-4 text-[#00FF66] text-xs font-mono focus:outline-none placeholder-[#00FF66]/30" placeholder="> Initializing secure buffer..."></textarea>
+            <div class="flex items-center gap-2 border border-[#00FF66]/40 bg-black px-3 py-2 mt-2">
+                <span class="text-[#00FF66] text-xs font-bold">></span>
+                <input type="text" id="note-cmd" onkeypress="handleNotebookCommand(event)" placeholder=":cmd (e.g. :ts, :clear, :export, :encrypt)" class="flex-1 bg-transparent text-[#00FF66] text-xs font-mono focus:outline-none placeholder-[#00FF66]/30">
             </div>
         </div>
     </div>
 
+    <!-- MODULE 3: CONTACTS -->
     <div id="mod-vault" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
         <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
-            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
-                <div class="hud-header mb-4 font-bold text-[#FF9900] tracking-widest">ENCRYPTED SOURCE CRM</div>
+            <div class="flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40 relative">
+                <div class="flex justify-between items-center mb-4">
+                    <div class="font-bold text-[#FF9900] tracking-widest">[ SOURCE CONTACTS ]</div>
+                    <div class="flex gap-2">
+                        <button onclick="document.getElementById('vault-upload').click()" class="action-btn !bg-transparent !border-[#00E5FF] !text-[#00E5FF] text-[10px]">📂 LOAD SECURE</button>
+                        <button onclick="exportVault()" class="action-btn !bg-transparent !border-[#00FF66] !text-[#00FF66] text-[10px]">💾 EXPORT SECURE</button>
+                        <input type="file" id="vault-upload" class="hidden" accept=".enc,.json" onchange="loadVaultFile(event)">
+                    </div>
+                </div>
                 <div class="grid grid-cols-2 gap-2 mb-2">
                     <input type="text" id="vault-name" placeholder="Name" class="form-input">
-                    <select id="vault-status" class="form-input text-[#FF9900]"><option>On the Record</option><option>On Background</option></select>
+                    <select id="vault-status" class="form-input text-[#FF9900]"><option>On the Record</option><option>On Background</option><option>Off the Record</option></select>
                     <input type="text" id="vault-phone" placeholder="Phone" class="form-input">
                     <input type="email" id="vault-email" placeholder="Email" class="form-input">
                 </div>
-                <textarea id="vault-notes" class="h-20 resize-none mb-2 form-input" placeholder="> Background notes..."></textarea>
-                <button onclick="addToVault()" class="action-btn w-full mb-4 !border-[#FF9900] text-[#FF9900]">➕ ADD TO VAULT</button>
+                <textarea id="vault-notes" class="h-20 resize-none mb-2 form-input" placeholder="> Context / Notes..."></textarea>
+                <button onclick="addToVault()" class="action-btn w-full mb-4 !border-[#FF9900] text-[#FF9900] hover:!bg-[#FF9900] hover:text-black">➕ WRITE TO MEMORY</button>
                 <div id="vault-directory" class="flex-1 overflow-y-auto space-y-2 mt-4 border-t border-[#FF9900]/40 pt-4"></div>
             </div>
-            <div class="hud-panel w-1/3 flex flex-col p-4 border border-[#FF0033]/40 bg-[#05080A]/90">
-                <div class="hud-header mb-4 text-[#FF0033] font-bold tracking-widest border-b border-[#FF0033]/40 pb-1">EXIF SCRUBBER</div>
-                <input type="file" id="image-file" accept="image/jpeg" class="mb-4 text-xs border border-[#FF0033]/40 p-2 text-white">
+            <!-- Exif Scrubber -->
+            <div class="w-1/3 flex flex-col p-4 border border-[#FF0033]/40 bg-[#05080A]/90">
+                <div class="font-bold text-[#FF0033] tracking-widest border-b border-[#FF0033]/40 pb-1 mb-4">[ EXIF SCRUBBER ]</div>
+                <input type="file" id="image-file" accept="image/jpeg" class="mb-4 text-xs border border-[#FF0033]/40 p-2 text-white bg-black">
                 <button onclick="scrubEXIF()" class="action-btn w-full !border-[#FF0033] !text-[#FF0033] hover:!bg-[#FF0033] hover:!text-black">PURGE METADATA</button>
             </div>
         </div>
     </div>
 
+    <!-- MODULE 4: AP EDITOR -->
     <div id="mod-editorial" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
         <div class="w-full flex gap-4 h-full pointer-events-auto z-10">
-            <div class="hud-panel flex-1 flex flex-col p-4 bg-[#05080A]/90 border border-[#FF9900]/40">
-                <div class="hud-header mb-4 font-bold text-[#FF9900] tracking-widest">3-TIER SCANNER</div>
-                <textarea id="workbench-text" class="flex-1 resize-none mb-4 form-input" placeholder="> Paste draft copy here..."></textarea>
-                <button onclick="runAPStyleCheck()" class="action-btn w-full !bg-[#FF9900]/10 !border-[#FF9900] !text-[#FF9900]">SCAN DRAFT</button>
-                <div id="ap-results" class="h-48 overflow-y-auto mt-4 text-xs space-y-2 font-mono border border-[#FF9900]/40 p-3 bg-black/60"></div>
+            <div class="flex-1 flex flex-col p-4 bg-black border-2 border-[#FF9900] relative">
+                <!-- Quote Banner -->
+                <div class="bg-[#FF9900]/10 border border-[#FF9900]/40 p-3 mb-4 text-center">
+                    <div class="text-[#FF9900] font-bold text-xs italic">"With great power comes great responsibility." — Stan Lee</div>
+                </div>
+                
+                <div class="flex justify-between items-center mb-2">
+                    <span class="font-bold text-[#FF9900] text-sm">[ COPY SCANNER ]</span>
+                </div>
+                <textarea id="workbench-text" class="flex-1 resize-none mb-4 bg-[#05080A] border border-[#FF9900]/40 p-4 text-[#FF9900] text-xs font-mono focus:outline-none" placeholder="> Paste draft copy here for analysis..."></textarea>
+                
+                <div class="flex gap-2">
+                    <button onclick="runAPStyleCheck()" class="action-btn flex-1 !bg-[#FF9900]/20 !border-[#FF9900] !text-[#FF9900] hover:!bg-[#FF9900] hover:text-black">SCAN DRAFT</button>
+                    <button onclick="saveEncryptedDraft()" class="action-btn flex-1 !bg-transparent !border-[#00FF66] !text-[#00FF66] hover:!bg-[#00FF66] hover:text-black">💾 EXPORT SECURE DRAFT</button>
+                </div>
+                <div id="ap-results" class="h-40 overflow-y-auto mt-4 text-xs space-y-2 font-mono border border-[#FF9900]/40 p-3 bg-[#05080A]"></div>
             </div>
-            <div class="hud-panel w-1/3 flex flex-col p-4 border border-[#00E5FF]/40 bg-[#05080A]/90">
-                <div class="hud-header mb-3 font-bold text-[#00E5FF] tracking-widest border-b border-[#00E5FF]/40 pb-1">QUICK SEARCH</div>
-                <input type="text" id="stylebook-search" oninput="searchStylebook()" placeholder="🔍 Search rules..." class="mb-3 form-input">
-                <div id="stylebook-results" class="flex-1 overflow-y-auto text-xs space-y-3 font-mono border border-[#00E5FF]/40 p-3 bg-black/60"></div>
+
+            <!-- AP Quick Search -->
+            <div class="w-1/3 flex flex-col p-4 border-2 border-[#00E5FF] bg-black">
+                <div class="font-bold text-[#00E5FF] tracking-widest border-b border-[#00E5FF]/40 pb-1 mb-3">[ AP STYLEBOOK QUICK SEARCH ]</div>
+                <input type="text" id="stylebook-search" oninput="searchStylebook()" placeholder="> Search rules..." class="mb-3 bg-transparent border border-[#00E5FF]/60 text-[#00E5FF] text-xs p-2 focus:outline-none placeholder-[#00E5FF]/40">
+                <div id="stylebook-results" class="flex-1 overflow-y-auto text-xs space-y-2 font-mono bg-[#05080A] p-2 border border-[#00E5FF]/30"></div>
             </div>
         </div>
     </div>
 
-    <!-- MODULE 5: Multi-Volume Codex Terminal -->
+    <!-- MODULE 5: CODEX -->
     <div id="mod-handbook" class="module-container pt-20 px-2 pb-12 h-[100dvh] w-screen bg-[#05080A]">
-        <div class="w-full h-full flex flex-col pointer-events-auto z-10 border-2 border-[#00FF66]/60 bg-black shadow-[0_0_30px_rgba(0,255,102,0.15)]">
-            <div class="bg-[#00FF66]/10 border-b-2 border-[#00FF66]/60 px-3 py-1.5 flex justify-between items-center text-[11px] font-mono tracking-widest text-[#00FF66] shrink-0">
-                <span>// CODEX_v12.1 // SECURE_DB</span>
-                <span id="codex-status" class="animate-pulse">ONLINE</span>
+        <div class="w-full h-full flex flex-col pointer-events-auto z-10 border-2 border-[#00FF66] bg-black relative">
+            <div class="bg-[#00FF66]/10 border-b border-[#00FF66]/60 px-3 py-2 flex justify-between items-center text-xs font-mono tracking-widest text-[#00FF66] shrink-0">
+                <span class="font-bold">[ GLOBAL CODEX SEARCH ]</span>
+                <input type="text" id="global-codex-search" oninput="filterGlobalCodex()" placeholder="> QUERY DATABASE..." class="w-1/2 bg-black border border-[#00FF66]/60 text-[#00FF66] px-2 py-1 text-xs focus:outline-none uppercase placeholder-[#00FF66]/30">
             </div>
             
             <div class="bg-black border-b border-[#00FF66]/40 px-2 py-1.5 flex gap-2 shrink-0 text-xs overflow-x-auto">
                 <span class="text-[#FF9900] font-bold self-center mr-1 text-[10px]">LIB:</span>
                 <button onclick="setLibraryVolume('ALL')" id="lib-btn-ALL" class="lib-tab active px-2.5 py-1 border border-[#00FF66] text-[#00FF66] bg-[#00FF66]/20 font-bold transition-all text-[11px]">ALL</button>
-                <button onclick="setLibraryVolume('AP STYLE')" id="lib-btn-AP" class="lib-tab px-2.5 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all text-[11px]">AP STYLE</button>
+                <button onclick="setLibraryVolume('AP STYLE')" id="lib-btn-AP" class="lib-tab px-2.5 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all text-[11px]">AP</button>
                 <button onclick="setLibraryVolume('STRUNK & WHITE')" id="lib-btn-STRUNK" class="lib-tab px-2.5 py-1 border border-[#00FF66]/40 text-[#00FF66] hover:bg-[#00FF66]/10 transition-all text-[11px]">STRUNK</button>
             </div>
 
             <div class="flex-1 grid grid-cols-12 overflow-hidden font-mono min-h-0">
-                <div class="col-span-4 md:col-span-3 border-r-2 border-[#00FF66]/60 flex flex-col bg-black min-h-0">
-                    <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 shrink-0">
-                        <input type="text" id="codex-search" oninput="filterCodexIndex()" placeholder="FILTER..." class="w-full bg-black border border-[#00FF66]/60 text-[#00FF66] px-1.5 py-1 text-[11px] focus:outline-none uppercase placeholder-[#00FF66]/30">
-                    </div>
+                <!-- Column 1: Directory -->
+                <div class="col-span-4 md:col-span-3 border-r border-[#00FF66]/60 flex flex-col bg-[#05080A] min-h-0">
+                    <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 shrink-0 text-[#FF9900] text-[11px] font-bold">DIRECTORY</div>
                     <div id="codex-folders" class="flex-1 overflow-y-auto min-h-0 space-y-0.5 p-1 bg-black text-[11px]"></div>
                 </div>
-                <div class="col-span-4 md:col-span-4 border-r-2 border-[#00FF66]/60 flex flex-col bg-black min-h-0">
+                <!-- Column 2: Index -->
+                <div class="col-span-4 md:col-span-4 border-r border-[#00FF66]/60 flex flex-col bg-[#05080A] min-h-0">
                     <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 flex justify-between items-center shrink-0">
                         <span id="index-title" class="text-[11px] text-[#FF9900] font-bold truncate">INDEX</span>
                         <span id="index-count" class="text-[9px] text-[#00FF66]/60">0</span>
                     </div>
                     <div id="codex-index-list" class="flex-1 overflow-y-auto min-h-0 p-1 space-y-1 bg-black text-[11px]"></div>
                 </div>
-                <div class="col-span-4 md:col-span-5 flex flex-col bg-black min-h-0">
+                <!-- Column 3: Buffer -->
+                <div class="col-span-4 md:col-span-5 flex flex-col bg-[#05080A] min-h-0">
                     <div class="p-2 border-b border-[#00FF66]/40 bg-[#00FF66]/5 flex justify-between items-center shrink-0">
                         <span class="text-[11px] text-[#FF9900] font-bold truncate">BUFFER</span>
                         <span id="reading-status" class="text-[9px] text-[#00FF66]/60">IDLE</span>
                     </div>
-                    <div class="flex-1 overflow-y-auto min-h-0 p-3 bg-black">
-                        <h2 id="reading-term" class="text-xs font-bold text-[#00FF66] uppercase tracking-wider mb-2 border-b border-[#00FF66]/30 pb-1">--</h2>
-                        <div id="reading-rule" class="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap font-mono pb-12">
-                            // SELECT ENTRY.
+                    <div class="flex-1 overflow-y-auto min-h-0 p-4 bg-black relative">
+                        <h2 id="reading-term" class="text-sm font-bold text-[#00FF66] uppercase tracking-wider mb-2 border-b border-[#00FF66]/30 pb-1">--</h2>
+                        <div id="reading-rule" class="text-xs text-gray-300 leading-relaxed whitespace-pre-wrap font-mono pb-12">
+                            > SELECT ENTRY TO LOAD DATA.
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="border-t-2 border-[#00FF66]/60 px-3 py-1 text-[9px] text-[#00FF66]/60 bg-black flex justify-between shrink-0 mb-6 md:mb-0">
-                <span>LINK: ACTIVE</span>
-                <span>ENC: AES-256</span>
+        </div>
+    </div>
+
+    <!-- MODULE 6: AI OVERSEER -->
+    <div id="mod-overseer" class="module-container pt-20 px-6 pb-6 bg-[#05080A]">
+        <div class="w-full h-full flex gap-4 pointer-events-auto z-10">
+            <!-- Left Sidebar (Telemetry) -->
+            <div class="w-1/4 flex flex-col gap-4">
+                <div class="p-4 border-2 border-[#00E5FF] bg-[#05080A] relative shadow-[0_0_15px_rgba(0,229,255,0.15)]">
+                    <div class="absolute top-0 left-0 text-[#00E5FF] -mt-2 -ml-2 leading-none">+</div>
+                    <div class="absolute top-0 right-0 text-[#00E5FF] -mt-2 -mr-2 leading-none">+</div>
+                    <div class="absolute bottom-0 left-0 text-[#00E5FF] -mb-2 -ml-2 leading-none">+</div>
+                    <div class="absolute bottom-0 right-0 text-[#00E5FF] -mb-2 -mr-2 leading-none">+</div>
+                    <div class="text-[#00E5FF] font-bold tracking-widest border-b border-[#00E5FF]/40 pb-1 mb-2">[ PRESENT P.O.R. ]</div>
+                    <div class="text-xs text-[#00FF66] font-mono">> STATUS: AWAITING INPUT</div>
+                    <div class="text-xs text-[#FF9900] font-mono">> LATENCY: --ms</div>
+                </div>
+                <div class="flex-1 p-4 border-2 border-[#00E5FF] bg-[#05080A] relative">
+                    <div class="absolute top-0 left-0 text-[#00E5FF] -mt-2 -ml-2 leading-none">+</div>
+                    <div class="absolute bottom-0 left-0 text-[#00E5FF] -mb-2 -ml-2 leading-none">+</div>
+                    <div class="text-[#00E5FF] font-bold tracking-widest border-b border-[#00E5FF]/40 pb-1 mb-2">[ MEMORY BUFFER ]</div>
+                    <div class="text-xs text-[#00E5FF]/50 font-mono">> No context loaded.</div>
+                </div>
+            </div>
+            
+            <!-- Right Terminal (Chat/Directives) -->
+            <div class="flex-1 flex flex-col p-4 border-2 border-[#00E5FF] bg-black relative shadow-[0_0_20px_rgba(0,229,255,0.1)]">
+                <div class="absolute top-0 right-0 text-[#00E5FF] -mt-2 -mr-2 leading-none">+</div>
+                <div class="absolute bottom-0 right-0 text-[#00E5FF] -mb-2 -mr-2 leading-none">+</div>
+                
+                <div class="flex justify-between items-center border-b border-[#00E5FF]/40 pb-2 mb-4 bg-[#00E5FF]/5 px-2">
+                    <span class="text-[#00E5FF] font-bold tracking-widest">[ DEORBITAL DESCENT: AI AGENT ]</span>
+                    <span class="text-[#00E5FF] font-mono text-xs">SYSTEM :BL: 76.75 :00:</span>
+                </div>
+                <div id="overseer-terminal" class="flex-1 overflow-y-auto font-mono text-xs text-[#00E5FF] space-y-2 mb-4 px-2">
+                    <div>> VANTAGE COMMAND NEURAL LINK ESTABLISHED.</div>
+                    <div>> AWAITING AGENT-REACH/ODYSSEUS DIRECTIVES.</div>
+                </div>
+                <div class="flex items-center gap-2 border border-[#00E5FF]/60 bg-[#05080A] px-3 py-2">
+                    <span class="text-[#00E5FF] font-bold">></span>
+                    <input type="text" id="overseer-input" onkeypress="handleOverseerDirective(event)" placeholder="ENTER DIRECTIVE..." class="flex-1 bg-transparent text-[#00E5FF] text-xs font-mono focus:outline-none placeholder-[#00E5FF]/40">
+                </div>
             </div>
         </div>
     </div>
 
-    <script src="static/main.js?v=12.4"></script>
+    <script src="static/main.js?v=13.0"></script>
 </body>
 </html>
