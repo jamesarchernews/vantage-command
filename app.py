@@ -243,3 +243,64 @@ async def check_style(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     with open("index.html", "r", encoding="utf-8") as f: return f.read()
+from pydantic import BaseModel
+import re
+
+class DraftRequest(BaseModel):
+    text: str
+
+import httpx
+import re
+
+@app.post("/api/ap-editor/audit")
+async def ap_editor_audit(draft: DraftRequest):
+    text = draft.text
+    issues = []
+    
+    # === TIER 1: EXPANDED EDITORIAL & AP HEURISTICS ===
+    # 1. Capitalization Check
+    if text.strip() and text.strip()[0].islower():
+        issues.append({"type": "Syntax", "severity": "error", "message": "Draft begins with a lowercase letter. Capitalize the first word."})
+        
+    # 2. Verb Phrase (Onto vs On to)
+    if re.search(r'\b(moved|went|logged)\s+onto\b', text, re.IGNORECASE):
+        issues.append({"type": "Grammar", "severity": "warning", "message": "Use 'on to' instead of 'onto' when 'on' is part of the verb phrase (e.g., 'moved on to')."})
+        
+    # 3. Missing Quotes for Attribution
+    if re.search(r'\b(said|stated|added)\b', text, re.IGNORECASE) and '"' not in text:
+        issues.append({"type": "Punctuation", "severity": "warning", "message": "Attribution ('said') detected without quotation marks. Ensure spoken text is properly quoted."})
+
+    # 4. AP Percent Symbol
+    if re.search(r'\b\d+\s+percent\b', text, re.IGNORECASE):
+        issues.append({"type": "AP Style", "severity": "error", "message": "Use the '%' sign when paired with a numeral."})
+        
+    # 5. AP Time Formats
+    if re.search(r'\b\d{1,2}:00\s*[aA]\.?[mM]\.?|\b\d{1,2}:00\s*[pP]\.?[mM]\.?', text):
+        issues.append({"type": "AP Style", "severity": "error", "message": "Do not include ':00' if the time lands on the hour."})
+
+    # === TIER 2: LANGUAGE TOOL (Spelling & Hyphens) ===
+    if text.strip():
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.languagetool.org/v2/check",
+                    data={"text": text, "language": "en-US"},
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    lt_results = response.json().get("matches", [])
+                    for match in lt_results:
+                        message = match["message"]
+                        replacements = [r["value"] for r in match["replacements"][:3]]
+                        suggestion = f" Suggestion: {', '.join(replacements)}" if replacements else ""
+                        
+                        issues.append({
+                            "type": "Syntax Engine",
+                            "severity": "error" if match["rule"]["issueType"] == "misspelling" else "warning",
+                            "message": f"{message}{suggestion}"
+                        })
+        except Exception:
+            pass
+
+    word_count = len(text.split())
+    return {"status": "success", "issues": issues, "word_count": word_count}

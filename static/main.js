@@ -791,3 +791,109 @@ async function handleOverseerDirective(e) {
         term.scrollTop = term.scrollHeight;
     }
 }
+// === TAB 4: AP EDITOR LOGIC ===
+const apDraftInput = document.getElementById("ap-draft-input");
+const wordCountEl = document.getElementById("word-count");
+const runAuditBtn = document.getElementById("run-audit-btn");
+const auditResults = document.getElementById("audit-results");
+
+if (apDraftInput) {
+    // Tier 1: Real-time Word Counter
+    apDraftInput.addEventListener("input", (e) => {
+        const text = e.target.value.trim();
+        const count = text ? text.split(/\s+/).length : 0;
+        wordCountEl.innerText = count;
+    });
+}
+
+if (runAuditBtn) {
+    // Tier 2: Deep Newsroom Audit
+    runAuditBtn.addEventListener("click", async () => {
+        auditResults.innerHTML = "<span style='color: #00ffcc;'>Executing API Deep Scan...</span>";
+        
+        try {
+            const response = await fetch("/api/ap-editor/audit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: apDraftInput.value })
+            });
+            
+            const data = await response.json();
+            auditResults.innerHTML = "";
+            
+            if (data.issues.length === 0) {
+                auditResults.innerHTML = "<span style='color: #00ffcc;'>Draft is clean. No AP Style violations detected.</span>";
+                return;
+            }
+            
+            data.issues.forEach(issue => {
+                const color = issue.severity === "error" ? "#ff9900" : "#ff00ff"; // Orange for Errors, Magenta for Warnings
+                auditResults.innerHTML += `
+                    <div style="border-left: 2px solid ${color}; padding-left: 10px; margin-bottom: 12px; background: rgba(255, 255, 255, 0.05); padding: 8px;">
+                        <strong style="color: ${color};">[${issue.type}]</strong><br/> 
+                        ${issue.message}
+                    </div>
+                `;
+            });
+        } catch (error) {
+            auditResults.innerHTML = "<span style='color: red;'>Audit failed to connect to backend.</span>";
+        }
+    });
+}
+// === CORRECTED MODULE 4: AP EDITOR LOGIC ===
+const workbenchText = document.getElementById("workbench-text");
+const apResults = document.getElementById("ap-results");
+const workbenchPreview = document.getElementById("workbench-preview");
+
+// Tier 1: Real-time Word Count & Live Linter Highlights
+window.debouncedAPCheck = function() {
+    if (!workbenchText || !workbenchPreview) return;
+    const text = workbenchText.value;
+    const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+    
+    // Render live text with active highlights (Red for style errors, Orange for weasel words)
+    let highlightedText = text
+        .replace(/\b(claimed|insinuated|feels|believes)\b/gi, '<span style="background: rgba(255,153,0,0.3); border-bottom: 1px solid #ff9900;" title="Subjective attribution">$&</span>')
+        .replace(/\b\d{1,2}:00\s*[ap]\.?m\.?\b/gi, '<span style="background: rgba(255,0,0,0.3); border-bottom: 1px solid #ff0033;" title="AP Style Time Error">$&</span>')
+        .replace(/\b\d+\s+percent\b/gi, '<span style="background: rgba(255,0,0,0.3); border-bottom: 1px solid #ff0033;" title="Use % symbol">$&</span>')
+        .replace(/\n/g, '<br/>');
+
+    workbenchPreview.innerHTML = `
+        <div style="color: #00ffcc; margin-bottom: 10px; font-weight: bold;">[LIVE METRICS] Word Count: ${wordCount}</div>
+        <div>${highlightedText}</div>
+    `;
+};
+
+// Tier 2: Deep Newsroom Audit via Python Backend
+window.runAPStyleCheck = async function() {
+    if (!workbenchText || !apResults) return;
+    
+    apResults.innerHTML = "<span style='color: #00ffcc;'>Executing Tier 2 API Deep Scan...</span>";
+    
+    try {
+        const response = await fetch("/api/ap-editor/audit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: workbenchText.value })
+        });
+        
+        const data = await response.json();
+        apResults.innerHTML = "";
+        
+        if (data.issues.length === 0) {
+            apResults.innerHTML = "<span style='color: #00ffcc;'>Draft is clean. No AP Style violations detected.</span>";
+            return;
+        }
+        
+        data.issues.forEach(issue => {
+            const color = issue.severity === "error" ? "#FF0033" : "#FF9900"; // Red for Errors, Orange for Warnings
+            apResults.innerHTML += `
+                <div style="border-left: 2px solid ${color}; padding-left: 10px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.05); padding: 6px;">
+                    <strong style="color: ${color};">[${issue.type}]</strong> ${issue.message}
+                </div>
+            `;
+        });
+    } catch (error) {
+        apResults.innerHTML = "<span style='color: #FF0033;'>Audit failed to connect to backend.</span>";
+    }
+};
