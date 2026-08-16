@@ -84,13 +84,34 @@ if ("geolocation" in navigator) {
 
 let currentViewState = { longitude: -118.2426, latitude: 34.0549, zoom: 9, pitch: 45, bearing: 0 };
 let persistentEmergencies = [];
+
+// Layer States
+let latestALPR = [];
+let latestSurv = [];
+let latestDC = [];
+let latestGNSS = [];
 let latestAirTraffic = [];
-let latestSurveillance = [];
+
+let showALPR = true;
+let showSurv = true;
+let showDC = true;
+let showGNSS = true;
+let showAir = true;
+
 let activeRoutePath = null;
 let searchPinCoords = null;
 let transitData = [];
 let showTransit = false;
 let t = 0;
+
+window.updateLayers = function() {
+    showALPR = document.getElementById('layer-alpr').checked;
+    showSurv = document.getElementById('layer-surv').checked;
+    showDC = document.getElementById('layer-dc').checked;
+    showGNSS = document.getElementById('layer-gnss').checked;
+    showAir = document.getElementById('layer-air').checked;
+    requestAnimationFrame(renderLayers);
+};
 
 function initMapAndDeck() {
     deckgl = new deck.DeckGL({
@@ -116,8 +137,13 @@ function connectWebSocket() {
             const log = document.getElementById('log-console');
             if (log) log.innerHTML = `<div class="text-[#FF0033] truncate">[${new Date().toLocaleTimeString()}] PING: ${data.emergencies[0].type}</div>` + log.innerHTML;
         }
-        latestAirTraffic = data.air_traffic || [];
-        latestSurveillance = data.surveillance_nodes || []; 
+        
+        latestALPR = data.alpr_nodes || [];
+        latestSurv = data.surv_nodes || [];
+        latestDC = data.dc_nodes || [];
+        latestGNSS = data.gnss_nodes || [];
+        latestAirTraffic = (data.air_traffic || []).map(a => ({...a, type: 'CIVILIAN AIR', operator: 'ATC VECTOR'}));
+        
         const airStat = document.getElementById('stat-air');
         if (airStat) airStat.innerText = latestAirTraffic.length;
     };
@@ -207,30 +233,32 @@ function clearActiveRoute() {
 }
 
 let selectedTargetCoords = null;
-function showTargetCard(obj, isAir = false, isSurveillance = false) {
+function showTargetCard(obj) {
     playBeep(1400, 'sine', 0.08);
     const modal = document.getElementById('target-modal');
     modal.classList.remove('hidden');
-    document.getElementById('target-id').innerText = obj.id || obj.callsign || 'ALPR-NODE';
-    document.getElementById('target-coords').innerText = `${obj.coords[1].toFixed(4)}°, ${obj.coords[0].toFixed(4)}°`;
+    document.getElementById('target-id').innerText = obj.name || obj.callsign || obj.id || 'NODE DEPLOYMENT';
+    document.getElementById('target-coords').innerText = obj.coords ? `${obj.coords[1].toFixed(4)}°, ${obj.coords[0].toFixed(4)}°` : '--';
     selectedTargetCoords = obj.coords;
 
-    if (isAir) {
-        modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]');
-        document.getElementById('target-title').innerText = "AIRCRAFT VECTOR"; document.getElementById('target-title').className = "font-bold text-[#00FF66]";
-        document.getElementById('target-type').innerText = "CIVILIAN AIR"; document.getElementById('target-threat').innerText = "NOMINAL"; document.getElementById('target-threat').className = "text-[#00FF66] font-bold";
-    } else if (isSurveillance) {
-        modal.classList.remove('border-[#FF0033]');
-        modal.classList.add('border-[#ff00ff]'); 
-        document.getElementById('target-title').innerText = "SURVEILLANCE NODE"; document.getElementById('target-title').className = "font-bold text-[#ff00ff]";
-        document.getElementById('target-type').innerText = obj.type || "ALPR"; document.getElementById('target-threat').innerText = obj.operator || "UNKNOWN"; document.getElementById('target-threat').className = "text-[#ff00ff] font-bold";
-    } else {
-        if (obj.threat === 'RED') { modal.classList.add('border-[#FF0033]'); modal.classList.remove('border-[#ff00ff]'); } 
-        else { modal.classList.remove('border-[#FF0033]', 'border-[#ff00ff]'); }
-        document.getElementById('target-title').innerText = "INCIDENT"; document.getElementById('target-title').className = "font-bold text-[#FF9900]";
-        document.getElementById('target-type').innerText = obj.type; document.getElementById('target-threat').innerText = obj.threat === 'RED' ? 'PRIORITY 1' : 'PRIORITY 2';
-        document.getElementById('target-threat').className = obj.threat === 'RED' ? 'text-[#FF0033] font-bold' : 'text-[#FF9900] font-bold';
-    }
+    document.getElementById('target-title').innerText = "TARGET ACQUIRED"; 
+    
+    let themeColor = 'text-[#FF9900]';
+    let borderColor = 'border-[#FF9900]';
+    
+    if(obj.type && obj.type.includes('ALPR')) { themeColor = 'text-[#ff00ff]'; borderColor = 'border-[#ff00ff]'; }
+    else if(obj.type && obj.type.includes('SURV')) { themeColor = 'text-[#FF6600]'; borderColor = 'border-[#FF6600]'; }
+    else if(obj.type && obj.type.includes('DATA')) { themeColor = 'text-[#FFB400]'; borderColor = 'border-[#FFB400]'; }
+    else if(obj.type && obj.type.includes('GNSS')) { themeColor = 'text-[#00E5FF]'; borderColor = 'border-[#00E5FF]'; }
+    else if(obj.type && obj.type.includes('AIR')) { themeColor = 'text-[#00FF66]'; borderColor = 'border-[#00FF66]'; }
+    else if(obj.threat === 'RED') { themeColor = 'text-[#FF0033]'; borderColor = 'border-[#FF0033]'; }
+
+    document.getElementById('target-title').className = `font-bold ${themeColor}`;
+    modal.className = `absolute left-4 top-40 z-[600] w-80 max-h-[70vh] overflow-y-auto p-4 hud-panel pointer-events-auto border-2 ${borderColor} bg-[#05080A]/95 backdrop-blur-md relative`;
+
+    document.getElementById('target-type').innerText = obj.type || "SENSOR"; 
+    document.getElementById('target-threat').innerText = obj.operator || obj.threat || "UNKNOWN"; 
+    document.getElementById('target-threat').className = `${themeColor} font-bold`;
 
     document.getElementById('lock-cam-btn').onclick = () => { deckgl.setProps({ initialViewState: { ...currentViewState, longitude: selectedTargetCoords[0], latitude: selectedTargetCoords[1], zoom: 16, transitionDuration: 1000 }}); };
     document.getElementById('directions-btn').onclick = () => { calculateInAppRoute(selectedTargetCoords[0], selectedTargetCoords[1]); };
@@ -257,22 +285,42 @@ function renderLayers() {
     if (showTransit && transitData.length > 0) {
         layers.push(new deck.PathLayer({ id: 'transit-lines', data: transitData, getPath: d=>d.path, getColor: [0, 229, 255, 120], getWidth: 15, widthMinPixels: 2 }));
     }
-    
-    layers.push(new deck.ScatterplotLayer({
-        id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220 })),
-        getPosition: d => d.coords, getFillColor: d => d.threat === 'RED' ? [255, 0, 51, d.alpha] : [255, 153, 0, d.alpha],
-        getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, false); }
-    }));
-    
-    layers.push(new deck.ColumnLayer({
-        id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, true, false); }
-    }));
 
-    if (latestSurveillance && latestSurveillance.length > 0) {
+    if (showALPR && latestALPR.length > 0) {
         layers.push(new deck.ScatterplotLayer({
-            id: 'surveillance', data: latestSurveillance, getPosition: d => d.coords, getFillColor: [255, 0, 255, 200], getRadius: 60, radiusMinPixels: 6, radiusMaxPixels: 18, stroked: true, getLineColor: [255, 255, 255, 255], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object, false, true); }
+            id: 'alpr', data: latestALPR, getPosition: d => d.coords, getFillColor: [255, 0, 255, 200], getRadius: 50, radiusMinPixels: 4, radiusMaxPixels: 15, stroked: true, getLineColor: [255, 255, 255, 200], pickable: true, onClick: (i) => { if(i.object) showTargetCard(i.object); }
         }));
     }
+
+    if (showSurv && latestSurv.length > 0) {
+        layers.push(new deck.ScatterplotLayer({
+            id: 'surv', data: latestSurv, getPosition: d => d.coords, getFillColor: [255, 102, 0, 200], getRadius: 50, radiusMinPixels: 4, radiusMaxPixels: 15, stroked: true, getLineColor: [255, 255, 255, 200], pickable: true, onClick: (i) => { if(i.object) showTargetCard(i.object); }
+        }));
+    }
+
+    if (showDC && latestDC.length > 0) {
+        layers.push(new deck.ColumnLayer({
+            id: 'dc', data: latestDC, getPosition: d => d.coords, getElevation: 100, getFillColor: [255, 180, 0, 180], radius: 150, extruded: true, pickable: true, onClick: (i) => { if(i.object) showTargetCard(i.object); }
+        }));
+    }
+
+    if (showGNSS && latestGNSS.length > 0) {
+        layers.push(new deck.ScatterplotLayer({
+            id: 'gnss', data: latestGNSS, getPosition: d => d.coords, getFillColor: [0, 229, 255, 200], getRadius: 40, radiusMinPixels: 3, radiusMaxPixels: 10, stroked: true, getLineColor: [255, 255, 255, 200], pickable: true, onClick: (i) => { if(i.object) showTargetCard(i.object); }
+        }));
+    }
+
+    if (showAir && latestAirTraffic.length > 0) {
+        layers.push(new deck.ColumnLayer({
+            id: 'air-traffic', data: latestAirTraffic, radius: 250, extruded: true, getPosition: d => [d.coords[0], d.coords[1]], getElevation: d => d.coords[2], getFillColor: [0, 255, 102, 160], pickable: true, onClick: (i) => { if(i.object) showTargetCard(i.object); }
+        }));
+    }
+    
+    layers.push(new deck.ScatterplotLayer({
+        id: 'emergencies', data: persistentEmergencies.map(e => ({ ...e, alpha: (now - e.timestamp) > 30000 ? Math.max(0, Math.floor(220 * (1 - (((now - e.timestamp)/1000 - 30) / 10)))) : 220, operator: e.threat, name: "INCIDENT" })),
+        getPosition: d => d.coords, getFillColor: d => d.threat === 'RED' ? [255, 0, 51, d.alpha] : [255, 153, 0, d.alpha],
+        getRadius: d => (t * 8) + 20, radiusMinPixels: 8, radiusMaxPixels: 60, stroked: true, getLineColor: d => [255, 255, 255, d.alpha], pickable: true, onClick: (i) => { if (i.object) showTargetCard(i.object); }
+    }));
 
     deckgl.setProps({ layers });
     requestAnimationFrame(renderLayers);

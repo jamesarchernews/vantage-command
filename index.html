@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OSINT TACTICAL COMMAND [BUILD 015.2]</title>
+    <title>OSINT TACTICAL COMMAND [BUILD 016.0]</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/deck.gl@8.9.33/dist.min.js"></script>
-    <link rel="stylesheet" href="static/styles.css?v=15.2">
+    <link rel="stylesheet" href="static/styles.css?v=16.0">
 </head>
 <body class="bg-[#05080A] text-[#FF9900] overflow-hidden h-[100dvh] w-screen select-none font-mono relative">
     <div class="crt-overlay pointer-events-none z-[999]"></div>
@@ -16,7 +16,7 @@
     <div id="start-screen" class="fixed inset-0 bg-[#05080A] z-[1000] flex flex-col items-center justify-center cursor-pointer pointer-events-auto">
         <div class="hud-panel p-8 text-center border-2 border-[#00E5FF] shadow-[0_0_20px_rgba(0,229,255,0.2)]">
             <h1 class="text-3xl font-black text-[#00E5FF] tracking-widest mb-2 animate-pulse">VANTAGE // COMMAND MODULE</h1>
-            <p class="text-xs text-[#00FF66] tracking-wider mb-6">BUILD 015.2 // JOURNALISTIC LINTER ONLINE</p>
+            <p class="text-xs text-[#00FF66] tracking-wider mb-6">BUILD 016.0 // TACTICAL DATA PIPELINE ONLINE</p>
             <div class="border border-[#00E5FF] py-3 px-6 text-sm bg-[#00E5FF]/10 hover:bg-[#00E5FF]/25 transition-all font-bold">
                 [ INITIALIZE TACTICAL LINK ]
             </div>
@@ -37,6 +37,7 @@
     <div id="mod-grid" class="module-container active">
         <div id="map-container" class="absolute inset-0 z-0"></div>
         
+        <!-- Search & Transit Top Left -->
         <div class="absolute top-20 left-4 z-[600] flex flex-col gap-2 pointer-events-auto">
             <div class="hud-panel p-2 bg-[#05080A]/80 backdrop-blur-md border border-[#00E5FF] flex items-center gap-2 w-72">
                 <span class="text-[#00E5FF] text-xs">🔍</span>
@@ -47,6 +48,7 @@
             </button>
         </div>
 
+        <!-- Target Modal -->
         <div id="target-modal" class="hidden absolute left-4 top-40 z-[600] w-80 max-h-[70vh] overflow-y-auto p-4 hud-panel pointer-events-auto border-2 border-[#FF9900] bg-[#05080A]/95 backdrop-blur-md relative">
             <div class="flex justify-between items-center border-b border-[#FF9900] mb-3 pb-1">
                 <span class="font-bold text-sm text-[#FF9900]" id="target-title">TARGET ACQUIRED</span>
@@ -72,6 +74,7 @@
             </div>
         </div>
 
+        <!-- Telemetry Right HUD -->
         <div class="absolute right-4 top-20 w-72 hud-panel p-0 z-[600] flex flex-col pointer-events-auto bg-[#05080A]/60 backdrop-blur-md border border-[#FF0033] shadow-[0_0_15px_rgba(255,0,51,0.2)] transition-all" id="telemetry-box">
             <div class="flex justify-between items-center p-3 border-b border-[#FF0033]/40 bg-[#FF0033]/10">
                 <span class="font-bold text-xs text-[#FF0033] tracking-widest">GRID TELEMETRY</span>
@@ -84,6 +87,28 @@
             </div>
             <div id="telemetry-collapsed" class="hidden p-2 text-[10px] text-center font-bold text-[#FF0033]">
                 AIR: <span id="stat-air-mini" class="text-[#00FF66]">0</span> | PINGS: <span id="stat-emg-mini">0</span>
+            </div>
+        </div>
+
+        <!-- Tactical Layer Filter Matrix Bottom Right -->
+        <div class="absolute bottom-4 right-4 w-64 hud-panel p-3 z-[600] pointer-events-auto bg-[#05080A]/80 backdrop-blur-md border border-[#00E5FF] shadow-[0_0_15px_rgba(0,229,255,0.2)]">
+            <div class="text-[#00E5FF] font-bold text-[11px] tracking-widest mb-2 border-b border-[#00E5FF]/40 pb-1">[ TACTICAL LAYERS ]</div>
+            <div class="space-y-1.5">
+                <label class="flex items-center space-x-2 text-[10px] font-bold text-[#ff00ff] cursor-pointer">
+                    <input type="checkbox" id="layer-alpr" checked onchange="updateLayers()" class="form-checkbox bg-black border-[#ff00ff] text-[#ff00ff] focus:ring-0"> <span>[•] ALPR NETWORK</span>
+                </label>
+                <label class="flex items-center space-x-2 text-[10px] font-bold text-[#FF6600] cursor-pointer">
+                    <input type="checkbox" id="layer-surv" checked onchange="updateLayers()" class="form-checkbox bg-black border-[#FF6600] text-[#FF6600] focus:ring-0"> <span>[•] SURVEILLANCE / SENSORS</span>
+                </label>
+                <label class="flex items-center space-x-2 text-[10px] font-bold text-[#FFB400] cursor-pointer">
+                    <input type="checkbox" id="layer-dc" checked onchange="updateLayers()" class="form-checkbox bg-black border-[#FFB400] text-[#FFB400] focus:ring-0"> <span>[•] DATA CENTERS & IXPs</span>
+                </label>
+                <label class="flex items-center space-x-2 text-[10px] font-bold text-[#00E5FF] cursor-pointer">
+                    <input type="checkbox" id="layer-gnss" checked onchange="updateLayers()" class="form-checkbox bg-black border-[#00E5FF] text-[#00E5FF] focus:ring-0"> <span>[•] GNSS / TIMING NODES</span>
+                </label>
+                <label class="flex items-center space-x-2 text-[10px] font-bold text-[#00FF66] cursor-pointer">
+                    <input type="checkbox" id="layer-air" checked onchange="updateLayers()" class="form-checkbox bg-black border-[#00FF66] text-[#00FF66] focus:ring-0"> <span>[•] LIVE AIR TRAFFIC</span>
+                </label>
             </div>
         </div>
     </div>
@@ -266,6 +291,6 @@
         </div>
     </div>
 
-    <script src="static/main.js?v=15.2"></script>
+    <script src="static/main.js?v=16.0"></script>
 </body>
 </html>
