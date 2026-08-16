@@ -1,4 +1,4 @@
-# BUILD: 016.0 (AUTHENTIC OSINT DATA PIPELINE & LAYER MATRIX)
+# BUILD: 016.1 (DEEP RECURSIVE PARSERS & OVERPASS NWR ENGINE)
 import asyncio
 import json
 import httpx
@@ -12,7 +12,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, R
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="OSINT TACTICAL COMMAND", version="016.0")
+app = FastAPI(title="OSINT TACTICAL COMMAND", version="016.1")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 AP_DB_FILE = "ap_style_database.json"
@@ -25,6 +25,8 @@ live_cad_dispatches = []
 LA_BBOX = {"lamin": 33.5, "lamax": 34.5, "lomin": -118.8, "lomax": -117.5}
 CA_BBOX = {"lamin": 32.0, "lamax": 42.0, "lomin": -124.0, "lomax": -114.0}
 
+HEADERS = {"User-Agent": "VantageCommand/OSINT-Pipeline"}
+
 # Authentic Data Caches
 cache_time = {'alpr': 0, 'surv': 0, 'dc': 0, 'gnss': 0}
 caches = {'alpr': [], 'surv': [], 'dc': [], 'gnss': []}
@@ -34,26 +36,33 @@ def filter_la(lon, lat):
         return LA_BBOX["lomin"] <= float(lon) <= LA_BBOX["lomax"] and LA_BBOX["lamin"] <= float(lat) <= LA_BBOX["lamax"]
     except: return False
 
+def recursive_extract_coords(node, results_list, default_type, operator_field="operator"):
+    if isinstance(node, dict):
+        if node.get("type") == "Feature" and isinstance(node.get("geometry"), dict) and node["geometry"].get("type") == "Point":
+            coords = node["geometry"].get("coordinates", [0, 0])
+            props = node.get("properties", {})
+            if len(coords) >= 2 and filter_la(coords[0], coords[1]):
+                results_list.append({"coords": [float(coords[0]), float(coords[1])], "type": props.get("type", default_type), "operator": props.get(operator_field, "UNKNOWN"), "name": props.get("name", "N/A")})
+            return 
+        elif ("lat" in node or "latitude" in node) and ("lon" in node or "lng" in node or "longitude" in node):
+            lat = node.get("lat") or node.get("latitude")
+            lon = node.get("lon") or node.get("lng") or node.get("longitude")
+            if lat and lon and filter_la(lon, lat):
+                results_list.append({"coords": [float(lon), float(lat)], "type": node.get("type", default_type), "operator": node.get(operator_field, "UNKNOWN"), "name": node.get("name", "N/A")})
+            return
+        else:
+            for v in node.values():
+                recursive_extract_coords(v, results_list, default_type, operator_field)
+    elif isinstance(node, list):
+        for item in node:
+            recursive_extract_coords(item, results_list, default_type, operator_field)
+
 async def fetch_github_geojson(client, url, default_type, operator_field="operator"):
     nodes = []
     try:
-        res = await client.get(url, timeout=10.0)
+        res = await client.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
-            data = res.json()
-            features = data.get("features", []) if isinstance(data, dict) else data
-            for f in features:
-                if isinstance(f, dict):
-                    geom = f.get("geometry", {})
-                    props = f.get("properties", {})
-                    if geom and geom.get("type") == "Point":
-                        coords = geom.get("coordinates", [0, 0])
-                        if filter_la(coords[0], coords[1]):
-                            nodes.append({"coords": [coords[0], coords[1]], "type": props.get("type", default_type), "operator": props.get(operator_field, "UNKNOWN"), "name": props.get("name", "N/A")})
-                    elif "lat" in f or "latitude" in f:
-                        lat = f.get("lat") or f.get("latitude")
-                        lon = f.get("lon") or f.get("lng") or f.get("longitude")
-                        if filter_la(lon, lat):
-                            nodes.append({"coords": [float(lon), float(lat)], "type": f.get("type", default_type), "operator": f.get(operator_field, "UNKNOWN"), "name": f.get("name", "N/A")})
+            recursive_extract_coords(res.json(), nodes, default_type, operator_field)
     except Exception: pass
     return nodes
 
@@ -64,12 +73,14 @@ async def update_caches(client):
     if now - cache_time['alpr'] > 3600:
         nodes = await fetch_github_geojson(client, "https://raw.githubusercontent.com/Ringmast4r/FLOCK/main/camera_networks.geojson", "ALPR NODE (FLOCK)", "operator")
         if not nodes: nodes = await fetch_github_geojson(client, "https://raw.githubusercontent.com/Ringmast4r/FLOCK/main/camera_networks.json", "ALPR NODE", "operator")
-        if not nodes: # Authentic Overpass Fallback
+        if not nodes:
             try:
-                q = f"""[out:json][timeout:15];(node["man_made"="surveillance"]["surveillance:type"="ALPR"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}); node["camera:type"="alpr"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out body;"""
-                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, timeout=15)
+                q = f"""[out:json][timeout:15];(nwr["surveillance:type"="ALPR"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}); nwr["camera:type"="alpr"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out center;"""
+                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, headers=HEADERS, timeout=15)
                 if res.status_code == 200:
-                    for el in res.json().get("elements", []): nodes.append({"coords": [el["lon"], el["lat"]], "type": "ALPR NODE", "operator": el.get("tags", {}).get("operator", "NETWORKED ALPR"), "name": el.get("tags", {}).get("name", "ALPR CAM")})
+                    for el in res.json().get("elements", []): 
+                        lat, lon = el.get("lat") or el.get("center", {}).get("lat"), el.get("lon") or el.get("center", {}).get("lon")
+                        if lat and lon: nodes.append({"coords": [lon, lat], "type": "ALPR NODE", "operator": el.get("tags", {}).get("operator", "NETWORKED ALPR"), "name": el.get("tags", {}).get("name", "ALPR CAM")})
             except: pass
         if nodes: caches['alpr'] = nodes; cache_time['alpr'] = now
 
@@ -79,10 +90,12 @@ async def update_caches(client):
         if not nodes: nodes = await fetch_github_geojson(client, "https://raw.githubusercontent.com/Ringmast4r/Global-Data-Center-Map/main/datacenters.json", "DATA CENTER", "operator")
         if not nodes:
             try:
-                q = f"""[out:json][timeout:15];(node["telecom"="data_center"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out body;"""
-                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, timeout=15)
+                q = f"""[out:json][timeout:15];(nwr["telecom"="data_center"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out center;"""
+                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, headers=HEADERS, timeout=15)
                 if res.status_code == 200:
-                    for el in res.json().get("elements", []): nodes.append({"coords": [el["lon"], el["lat"]], "type": "DATA CENTER / IXP", "operator": el.get("tags", {}).get("operator", "IXP HUB"), "name": el.get("tags", {}).get("name", "FACILITY")})
+                    for el in res.json().get("elements", []): 
+                        lat, lon = el.get("lat") or el.get("center", {}).get("lat"), el.get("lon") or el.get("center", {}).get("lon")
+                        if lat and lon: nodes.append({"coords": [lon, lat], "type": "DATA CENTER / IXP", "operator": el.get("tags", {}).get("operator", "IXP HUB"), "name": el.get("tags", {}).get("name", "FACILITY")})
             except: pass
         if nodes: caches['dc'] = nodes; cache_time['dc'] = now
 
@@ -92,12 +105,13 @@ async def update_caches(client):
         if not nodes: nodes = await fetch_github_geojson(client, "https://raw.githubusercontent.com/Ringmast4r/surveillance-capabilities-map/main/cameras.json", "SURVEILLANCE NODE", "agency")
         if not nodes:
             try:
-                q = f"""[out:json][timeout:15];(node["man_made"="surveillance"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out body;"""
-                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, timeout=15)
+                q = f"""[out:json][timeout:15];(nwr["man_made"="surveillance"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out center;"""
+                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, headers=HEADERS, timeout=15)
                 if res.status_code == 200:
                     for el in res.json().get("elements", []):
                         if el.get("tags", {}).get("surveillance:type") != "ALPR" and el.get("tags", {}).get("camera:type") != "alpr":
-                            nodes.append({"coords": [el["lon"], el["lat"]], "type": "SURVEILLANCE CCTV", "operator": el.get("tags", {}).get("operator", "MUNICIPAL"), "name": el.get("tags", {}).get("name", "CCTV NODE")})
+                            lat, lon = el.get("lat") or el.get("center", {}).get("lat"), el.get("lon") or el.get("center", {}).get("lon")
+                            if lat and lon: nodes.append({"coords": [lon, lat], "type": "SURVEILLANCE CCTV", "operator": el.get("tags", {}).get("operator", "MUNICIPAL"), "name": el.get("tags", {}).get("name", "CCTV NODE")})
             except: pass
         if nodes: caches['surv'] = nodes; cache_time['surv'] = now
 
@@ -107,17 +121,19 @@ async def update_caches(client):
         if not nodes: nodes = await fetch_github_geojson(client, "https://raw.githubusercontent.com/Ringmast4r/GNSS/main/stations.json", "GNSS REFERENCE", "network")
         if not nodes:
             try:
-                q = f"""[out:json][timeout:15];(node["man_made"="communications_tower"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out body;"""
-                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, timeout=15)
+                q = f"""[out:json][timeout:15];(nwr["man_made"="communications_tower"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}); nwr["man_made"="mast"]({LA_BBOX['lamin']},{LA_BBOX['lomin']},{LA_BBOX['lamax']},{LA_BBOX['lomax']}););out center;"""
+                res = await client.post("https://overpass-api.de/api/interpreter", data={'data': q}, headers=HEADERS, timeout=15)
                 if res.status_code == 200:
-                    for el in res.json().get("elements", []): nodes.append({"coords": [el["lon"], el["lat"]], "type": "COMMS TOWER / GNSS", "operator": el.get("tags", {}).get("operator", "NETWORK"), "name": el.get("tags", {}).get("name", "REFERENCE NODE")})
+                    for el in res.json().get("elements", []):
+                        lat, lon = el.get("lat") or el.get("center", {}).get("lat"), el.get("lon") or el.get("center", {}).get("lon")
+                        if lat and lon: nodes.append({"coords": [lon, lat], "type": "COMMS TOWER / GNSS", "operator": el.get("tags", {}).get("operator", "NETWORK"), "name": el.get("tags", {}).get("name", "REFERENCE NODE")})
             except: pass
         if nodes: caches['gnss'] = nodes; cache_time['gnss'] = now
 
 async def fetch_osint_data():
     global live_cad_dispatches
     payload = {
-        "build": "016.0", 
+        "build": "016.1", 
         "air_traffic": [], 
         "seismic": [], 
         "emergencies": list(live_cad_dispatches),
@@ -133,14 +149,14 @@ async def fetch_osint_data():
         payload.update({"alpr_nodes": caches['alpr'], "surv_nodes": caches['surv'], "dc_nodes": caches['dc'], "gnss_nodes": caches['gnss']})
 
         try:
-            res_air = await client.get(f"https://opensky-network.org/api/states/all?lamin={CA_BBOX['lamin']}&lamax={CA_BBOX['lamax']}&lomin={CA_BBOX['lomin']}&lomax={CA_BBOX['lomax']}")
+            res_air = await client.get(f"https://opensky-network.org/api/states/all?lamin={CA_BBOX['lamin']}&lamax={CA_BBOX['lamax']}&lomin={CA_BBOX['lomin']}&lomax={CA_BBOX['lomax']}", headers=HEADERS)
             if res_air.status_code == 200:
                 for s in (res_air.json().get("states") or [])[:50]:
                     if s[5] and s[6] and s[7]: payload["air_traffic"].append({"coords": [s[5], s[6], min(s[7], 12000)], "callsign": s[1].strip() if s[1] else "NAV-VECTOR", "heading": s[10] or 0})
         except: pass
 
         try:
-            res_nws = await client.get("https://api.weather.gov/alerts/active?area=CA", headers={"User-Agent": "VantageCommand/1.0"})
+            res_nws = await client.get("https://api.weather.gov/alerts/active?area=CA", headers=HEADERS)
             if res_nws.status_code == 200:
                 for a in res_nws.json().get("features", [])[:10]:
                     event_type = a.get("properties", {}).get("event", "HAZARD").upper()

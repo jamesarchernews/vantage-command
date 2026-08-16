@@ -247,9 +247,9 @@ function showTargetCard(obj) {
     let borderColor = 'border-[#FF9900]';
     
     if(obj.type && obj.type.includes('ALPR')) { themeColor = 'text-[#ff00ff]'; borderColor = 'border-[#ff00ff]'; }
-    else if(obj.type && obj.type.includes('SURV')) { themeColor = 'text-[#FF6600]'; borderColor = 'border-[#FF6600]'; }
+    else if(obj.type && obj.type.includes('SURV') || obj.type && obj.type.includes('CCTV')) { themeColor = 'text-[#FF6600]'; borderColor = 'border-[#FF6600]'; }
     else if(obj.type && obj.type.includes('DATA')) { themeColor = 'text-[#FFB400]'; borderColor = 'border-[#FFB400]'; }
-    else if(obj.type && obj.type.includes('GNSS')) { themeColor = 'text-[#00E5FF]'; borderColor = 'border-[#00E5FF]'; }
+    else if(obj.type && obj.type.includes('GNSS') || obj.type && obj.type.includes('TOWER')) { themeColor = 'text-[#00E5FF]'; borderColor = 'border-[#00E5FF]'; }
     else if(obj.type && obj.type.includes('AIR')) { themeColor = 'text-[#00FF66]'; borderColor = 'border-[#00FF66]'; }
     else if(obj.threat === 'RED') { themeColor = 'text-[#FF0033]'; borderColor = 'border-[#FF0033]'; }
 
